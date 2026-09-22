@@ -1,4 +1,4 @@
-# DANDI Compute: AIND Job Submitter
+# DANDI Compute (Runner)
 
 Automatic CRON-based submission of jobs from the [DANDI Compute: AIND Queue](https://github.com/dandi-compute/queue).
 
@@ -52,7 +52,7 @@ mit_preemptable|cpu=1024,gres/gpu=4,mem=4T
 
 ## How to process the queue (manual)
 
-Use the [Process queue](https://github.com/dandi-compute/submitter/actions/workflows/process-queue.yml) workflow dispatch.
+Use the [Process queue](https://github.com/dandi-compute/dandi-compute-runner/actions/workflows/process-queue.yml) workflow dispatch.
 
 | Input | Description | Default |
 |---|---|---|
@@ -62,7 +62,7 @@ Use the [Process queue](https://github.com/dandi-compute/submitter/actions/workf
 
 ## How to prepare the queue (manual)
 
-Use the [Prepare queue](https://github.com/dandi-compute/submitter/actions/workflows/prepare-queue.yml) workflow dispatch.
+Use the [Prepare queue](https://github.com/dandi-compute/dandi-compute-runner/actions/workflows/prepare-queue.yml) workflow dispatch.
 
 | Input | Description | Default |
 |---|---|---|
@@ -75,8 +75,8 @@ Use the [Prepare queue](https://github.com/dandi-compute/submitter/actions/workf
 
 Use one of the dedicated workflow dispatches:
 
-- [Prepare AIND job](https://github.com/dandi-compute/submitter/actions/workflows/prepare-aind.yml) for non-test preparation.
-- [Prepare AIND test job](https://github.com/dandi-compute/submitter/actions/workflows/prepare-aind-test.yml) for test preparation.
+- [Prepare AIND job](https://github.com/dandi-compute/dandi-compute-runner/actions/workflows/prepare-aind.yml) for non-test preparation.
+- [Prepare AIND test job](https://github.com/dandi-compute/dandi-compute-runner/actions/workflows/prepare-aind-test.yml) for test preparation.
 
 ### Prepare AIND job (non-test)
 

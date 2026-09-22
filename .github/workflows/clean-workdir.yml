@@ -66,4 +66,4 @@ jobs:
           from: DANDI Compute <dandi-compute@users.noreply.github.com>
           body: |
             The scheduled monthly cleanup of ./work/ encountered an issue.
-            Please check status at: https://github.com/dandi-compute/submitter/actions/workflows/clean-workdir.yml
+            Please check status at: https://github.com/dandi-compute/dandi-compute-runner/actions/workflows/clean-workdir.yml

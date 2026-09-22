@@ -74,4 +74,4 @@ jobs:
           from: DANDI Compute <dandi-compute@users.noreply.github.com>
           body: |
             The manual dispatch of AIND job archive encountered an issue!
-            Please check status at: https://github.com/dandi-compute/submitter/actions/workflows/archive-job.yml
+            Please check status at: https://github.com/dandi-compute/dandi-compute-runner/actions/workflows/archive-job.yml
