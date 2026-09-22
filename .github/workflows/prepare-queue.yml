@@ -96,4 +96,4 @@ jobs:
           from: DANDI Compute <dandi-compute@users.noreply.github.com>
           body: |
             The manual dispatch of AIND queue preparation encountered an issue!
-            Please check status at: https://github.com/dandi-compute/submitter/actions/workflows/prepare-queue.yml
+            Please check status at: https://github.com/dandi-compute/dandi-compute-runner/actions/workflows/prepare-queue.yml

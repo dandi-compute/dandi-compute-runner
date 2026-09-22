@@ -98,7 +98,7 @@ http_code=$(
     -H "Authorization: Bearer $GH_TOKEN" \
     -H "Accept: application/vnd.github+json" \
     -H "X-GitHub-Api-Version: 2022-11-28" \
-    https://api.github.com/repos/dandi-compute/submitter/actions/workflows/process-queue.yml/dispatches \
+    https://api.github.com/repos/dandi-compute/dandi-compute-runner/actions/workflows/process-queue.yml/dispatches \
     -d '{"ref":"main"}'
 ) || die "curl failed to complete the dispatch request"
 
