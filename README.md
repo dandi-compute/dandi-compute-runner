@@ -1,4 +1,4 @@
-# DANDI Compute: AIND Job Runner
+# DANDI Compute (Runner)
 
 Automatic CRON-based submission of jobs from the [DANDI Compute: AIND Queue](https://github.com/dandi-compute/queue).
 
