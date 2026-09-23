@@ -50,7 +50,7 @@ jobs:
       - name: Run queue processing script
         working-directory: /orcd/data/dandi/001/dandi-compute
         run: |
-          PROCESS_ARGS=(jobs process --queue ./queue/ --processing ./processing/ --max "${{ inputs.max }}")
+          PROCESS_ARGS=(jobs dispatch --queue ./queue/ --processing ./processing/ --max "${{ inputs.max }}")
 
           if [ "${{ inputs.test }}" = "true" ]; then
             PROCESS_ARGS+=(--test)
