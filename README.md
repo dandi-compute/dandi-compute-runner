@@ -83,7 +83,6 @@ Use one of the dedicated workflow dispatches:
 | `dandiset` | Dandiset ID (required unless `id` is provided). | _(none)_ |
 | `dandipath` | Local Dandiset path (required unless `id` is provided). | _(none)_ |
 | `config` | Registered configuration key. | `default` |
-| `pipeline` | Local path to pipeline repository. | `./aind-ephys-pipeline.cody` |
 | `version` | Pipeline version. | _(none)_ |
 | `params` | Parameters key. | `default` |
 | `submit` | Automatically submit after preparation. | `false` |
@@ -93,9 +92,5 @@ Use one of the dedicated workflow dispatches:
 
 | Input | Description | Default |
 |---|---|---|
-| `id` | Content ID to process (required unless `dandiset` is provided). | _(none)_ |
-| `dandiset` | Dandiset ID (required unless `id` is provided). | _(none)_ |
 | `config` | Registered configuration key. | `default` |
-| `pipeline` | Local path to pipeline repository. | `./aind-ephys-pipeline.cody` |
 | `params` | Parameters key. | `default` |
-| `queue` | Queue directory path. | `./queue` |

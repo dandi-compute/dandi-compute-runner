@@ -50,9 +50,7 @@ jobs:
       - name: Prepare AIND test job
         working-directory: /orcd/data/dandi/001/dandi-compute
         run: |
-          PREPARE_ARGS=(prepare aind --test)
-          PREPARE_ARGS+=(--pipeline "./aind-ephys-pipeline/")
-          PREPARE_ARGS+=(--queue "./queue/")
+          PREPARE_ARGS=(prepare aind --test --base /orcd/data/dandi/001/dandi-compute)
 
           if [ -n "${{ inputs.params }}" ]; then
             PREPARE_ARGS+=(--params "${{ inputs.params }}")
