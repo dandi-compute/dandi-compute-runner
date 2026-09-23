@@ -8,11 +8,6 @@ on:
         required: false
         default: false
         type: boolean
-      max:
-        description: "Maximum number of concurrent job submissions."
-        required: false
-        default: 2
-        type: number
 
 permissions:
   contents: read
@@ -50,7 +45,7 @@ jobs:
       - name: Run queue processing script
         working-directory: /orcd/data/dandi/001/dandi-compute
         run: |
-          PROCESS_ARGS=(queue process --queue ./queue/ --processing ./processing/ --max "${{ inputs.max }}")
+          PROCESS_ARGS=(jobs dispatch --base /orcd/data/dandi/001/dandi-compute)
 
           if [ "${{ inputs.test }}" = "true" ]; then
             PROCESS_ARGS+=(--test)

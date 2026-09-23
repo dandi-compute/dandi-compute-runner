@@ -37,7 +37,7 @@ jobs:
     steps:
       - name: Clean cached work directory
         working-directory: /orcd/data/dandi/001/dandi-compute
-        run: dandicompute clean --directory ./work/
+        run: dandicompute clean --base /orcd/data/dandi/001/dandi-compute --work
 
   NotifyOnFailure:
     if: ${{ always() && failure() }}  # 'always' for if any 'needs' are cancelled/skipped

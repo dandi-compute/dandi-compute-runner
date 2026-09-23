@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
     inputs:
       path:
-        description: "Path to job capsule."
+        description: "Path of the job capsule folder, relative to the job capsules Dandiset root."
         required: true
 
 concurrency:
@@ -43,9 +43,11 @@ jobs:
         working-directory: /orcd/data/dandi/001/dandi-compute
         run: pip install -U dandi
 
-      - name: Archive AIND job
+      - name: Archive job
         working-directory: /orcd/data/dandi/001/dandi-compute
-        run: dandicompute archive job --path ${{ inputs.path }} --processing ./tmp/
+        env:
+          CAPSULE_PATH: ${{ inputs.path }}
+        run: dandicompute archive --job "$CAPSULE_PATH" --base /orcd/data/dandi/001/dandi-compute
 
   NotifyOnFailure:
     if: ${{ always() && failure() }}
@@ -58,7 +60,7 @@ jobs:
         id: cooldown
         uses: ./.github/actions/check-cooldown
         with:
-          workflow_file: prepare-aind.yml
+          workflow_file: archive-job.yml
           token: ${{ github.token }}
 
       - name: Send email notification on failure

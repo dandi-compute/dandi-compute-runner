@@ -78,7 +78,7 @@ log "api.github.com reachable (HTTP ${gh_ping})"
 
 # --- pending check -----------------------------------------------------------
 log "Checking for pending queue entries"
-if ! dandicompute queue pending --silent; then
+if ! dandicompute jobs pending --silent; then
   log "No pending queue entries; skipping dispatch."
   exit 0
 fi

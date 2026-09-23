@@ -43,7 +43,7 @@ jobs:
     steps:
       - name: Update queue state
         working-directory: /orcd/data/dandi/001/dandi-compute
-        run: dandicompute queue refresh
+        run: dandicompute jobs refresh
 
       - name: Re-write crontab
         run:
