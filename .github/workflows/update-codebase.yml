@@ -7,9 +7,9 @@ on:
         description: "Which cloned directory (under the cluster data root) to pull."
         required: true
         type: choice
-        default: code
+        default: dandi-compute-core
         options:
-          - code
+          - dandi-compute-core
           - dandi-compute-runner
           - aind-ephys-pipeline
       reinstall:
