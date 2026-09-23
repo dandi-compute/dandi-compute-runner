@@ -7,9 +7,9 @@ on:
   workflow_dispatch:
     inputs:
       limit:
-        description: "Maximum number of jobs to add to the queue."
+        description: "Maximum number of job capsules to create per pipeline."
         required: false
-        default: "10"
+        default: "5"
   schedule:
     - cron: '0 0 * * *'
 
@@ -46,22 +46,13 @@ jobs:
         working-directory: /orcd/data/dandi/001/dandi-compute
         run: pip install -U dandi
 
-      - name: Prepare queue
+      - name: Create job capsules
         working-directory: /orcd/data/dandi/001/dandi-compute
         run: |
-          git -C ./queue fetch origin
-          git -C ./queue reset --hard origin/main
-          git -C ./queue clean -fd
-
-          dandicompute queue prepare --queue ./queue/ --pipeline ./aind-ephys-pipeline/ --limit ${{ inputs.limit || 10 }}
-          dandicompute queue prepare --queue ./queue/ --pipeline lfp --limit 10
-
-          git config --global user.name "github-actions[bot]"
-          git config --global user.email "github-actions[bot]@users.noreply.github.com"
-
-          git -C queue add .
-          git -C queue commit --message "update" || true  # || true in case of no changes
-          git -C queue push
+          # One call per pipeline so a large AIND backlog cannot use up the limit before LFP is reached.
+          for pipeline in aind+ephys lfp; do
+            dandicompute jobs create --base /orcd/data/dandi/001/dandi-compute --pipeline "$pipeline" --limit ${{ inputs.limit || 5 }}
+          done
 
       - name: Wait before finishing
         run: sleep 120
