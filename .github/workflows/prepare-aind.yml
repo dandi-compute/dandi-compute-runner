@@ -76,8 +76,7 @@ jobs:
       - name: Prepare AIND job
         working-directory: /orcd/data/dandi/001/dandi-compute
         run: |
-          PREPARE_ARGS=(prepare aind)
-          PREPARE_ARGS+=(--pipeline "./aind-ephys-pipeline/")
+          PREPARE_ARGS=(prepare aind --base /orcd/data/dandi/001/dandi-compute)
 
           if [ -n "${{ inputs.version }}" ]; then
             PREPARE_ARGS+=(--version "${{ inputs.version }}")

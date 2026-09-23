@@ -10,8 +10,7 @@ on:
         default: code
         options:
           - code
-          - submitter
-          - queue
+          - dandi-compute-runner
           - aind-ephys-pipeline
       reinstall:
         description: "Run `pip install -e` on the directory after pulling (only applies to installable Python packages)."
