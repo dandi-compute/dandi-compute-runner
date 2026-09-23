@@ -49,8 +49,9 @@ jobs:
       - name: Create job capsules
         working-directory: /orcd/data/dandi/001/dandi-compute
         run: |
-          # One call per pipeline so a large AIND backlog cannot use up the limit before LFP is reached.
-          for pipeline in aind+ephys lfp; do
+          # One call per configured pipeline, so each gets its own limit and none can starve another.
+          PIPELINES=$(python -c "from dandi_compute_code.queue import PipelineQueue; print(*PipelineQueue.load_pipeline_config()['pipelines'])")
+          for pipeline in $PIPELINES; do
             dandicompute jobs create --base /orcd/data/dandi/001/dandi-compute --pipeline "$pipeline" --limit ${{ inputs.limit || 5 }}
           done
 
