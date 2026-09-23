@@ -9,9 +9,9 @@
 set -uo pipefail
 
 INTERVAL_MIN=60
-SELF="/orcd/data/dandi/001/dandi-compute/submitter/launcher/revive.sh"
+SELF="/orcd/data/dandi/001/dandi-compute/dandi-compute-runner/launcher/revive.sh"
 LOGIN_HOST="login007"
-CRONTAB_FILE="/orcd/data/dandi/001/dandi-compute/submitter/launcher/crontab"
+CRONTAB_FILE="/orcd/data/dandi/001/dandi-compute/dandi-compute-runner/launcher/crontab"
 
 OTHERS=$(squeue --noheader --name="$SLURM_JOB_NAME" --user="$USER" \
          --states=PENDING,RUNNING --format="%A" \
