@@ -1,4 +1,4 @@
-name: Prepare queue
+name: Create job capsules
 
 permissions:
   contents: read
@@ -34,9 +34,9 @@ jobs:
           labels: mit,engaging,submitter
           token: ${{ secrets._GITHUB_API_KEY }}
 
-  PrepareQueue:
+  CreateJobCapsules:
     needs: CheckEngaging
-    name: Prepare AIND queue
+    name: Create job capsules
     permissions:
       contents: read
     runs-on: [self-hosted, mit, engaging, submitter]
@@ -60,7 +60,7 @@ jobs:
 
   NotifyOnFailure:
     if: ${{ always() && failure() }}  # 'always' for if any 'needs' are cancelled/skipped
-    needs: [CheckEngaging, PrepareQueue]
+    needs: [CheckEngaging, CreateJobCapsules]
     permissions:
       contents: read
       actions: read
@@ -83,9 +83,9 @@ jobs:
           server_port: 465
           username: ${{ secrets.MAIL_USERNAME }}
           password: ${{ secrets.MAIL_PASSWORD }}
-          subject: "DANDI Compute: AIND Queue preparation failed (MIT Engaging dispatch)"
+          subject: "DANDI Compute: job capsule creation failed (MIT Engaging dispatch)"
           to: cody.c.baker.phd@gmail.com  # Add more with comma separation (no spaces)
           from: DANDI Compute <dandi-compute@users.noreply.github.com>
           body: |
-            The manual dispatch of AIND queue preparation encountered an issue!
+            The creation of job capsules encountered an issue!
             Please check status at: https://github.com/dandi-compute/dandi-compute-runner/actions/workflows/prepare-queue.yml

@@ -60,9 +60,9 @@ Use the [Process queue](https://github.com/dandi-compute/dandi-compute-runner/ac
 
 
 
-## How to prepare the queue (manual)
+## How to create job capsules (manual)
 
-Use the [Prepare queue](https://github.com/dandi-compute/dandi-compute-runner/actions/workflows/prepare-queue.yml) workflow dispatch.
+Use the [Create job capsules](https://github.com/dandi-compute/dandi-compute-runner/actions/workflows/prepare-queue.yml) workflow dispatch.
 
 | Input | Description | Default |
 |---|---|---|
