@@ -48,7 +48,7 @@ jobs:
       - name: Re-write crontab
         run:
           ssh login007
-          crontab /orcd/data/dandi/001/dandi-compute/submitter/launcher/crontab
+          crontab /orcd/data/dandi/001/dandi-compute/dandi-compute-runner/launcher/crontab
 
   NotifyOnFailure:
     if: ${{ always() && failure() }}  # 'always' for if any 'needs' are cancelled/skipped
