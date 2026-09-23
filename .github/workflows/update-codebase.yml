@@ -4,16 +4,17 @@ on:
   workflow_dispatch:
     inputs:
       directory:
-        description: "Which cloned directory (under the cluster data root) to pull."
+        description: "Which cloned directory (under the cluster data root) to pull, or `all` for every one."
         required: true
         type: choice
         default: dandi-compute-core
         options:
+          - all
           - dandi-compute-core
           - dandi-compute-runner
           - aind-ephys-pipeline
       reinstall:
-        description: "Run `pip install -e` on the directory after pulling (only applies to installable Python packages)."
+        description: "Run `pip install -e` on each pulled directory (only applies to installable Python packages)."
         required: false
         type: boolean
         default: true
@@ -46,23 +47,36 @@ jobs:
     needs: CheckEngaging
     name: Update codebase
     runs-on: [self-hosted, mit, engaging, submitter]
+    env:
+      DIRECTORIES: ${{ inputs.directory == 'all' && 'dandi-compute-core dandi-compute-runner aind-ephys-pipeline' || inputs.directory }}
 
     steps:
       - name: Pull codebase
         working-directory: /orcd/data/dandi/001/dandi-compute
         run: |
-          git -C "./${{ inputs.directory }}/" fetch origin
-          git -C "./${{ inputs.directory }}/" reset --hard "@{u}"
-          if [ -d "./${{ inputs.directory }}/launcher" ]; then
-            find ./${{ inputs.directory }}/launcher/ -maxdepth 1 -type f ! -name "crontab" -exec chmod +x {} +
-          fi
+          for directory in $DIRECTORIES; do
+            echo "Pulling ./$directory/"
+            git -C "./$directory/" fetch --tags origin
+            # A detached checkout (aind-ephys-pipeline sits on whichever tag the last job checked out)
+            # has no upstream to reset to. Each job checks out its own tag, so fetching is enough.
+            if git -C "./$directory/" symbolic-ref -q HEAD > /dev/null; then
+              git -C "./$directory/" reset --hard "@{u}"
+            else
+              echo "./$directory/ is on a detached HEAD; fetched new tags without resetting."
+            fi
+            if [ -d "./$directory/launcher" ]; then
+              find "./$directory/launcher/" -maxdepth 1 -type f ! -name "crontab" -exec chmod +x {} +
+            fi
+          done
 
       - name: Reinstall package
         if: ${{ inputs.reinstall }}
         working-directory: /orcd/data/dandi/001/dandi-compute
         run: |
-          if [ -f "./${{ inputs.directory }}/pyproject.toml" ] || [ -f "./${{ inputs.directory }}/setup.py" ]; then
-            pip install -e "./${{ inputs.directory }}/"
-          else
-            echo "No installable Python package found in ./${{ inputs.directory }}/; skipping reinstall."
-          fi
+          for directory in $DIRECTORIES; do
+            if [ -f "./$directory/pyproject.toml" ] || [ -f "./$directory/setup.py" ]; then
+              pip install -e "./$directory/"
+            else
+              echo "No installable Python package found in ./$directory/; skipping reinstall."
+            fi
+          done
