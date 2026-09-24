@@ -80,3 +80,11 @@ jobs:
               echo "No installable Python package found in ./$directory/; skipping reinstall."
             fi
           done
+
+  # A new AIND pipeline tag arrives with the pull above, and its step images have to be cached
+  # before any capsule formed against it runs. Nothing is submitted when every image is cached.
+  UpdateContainerImages:
+    needs: UpdateCodebase
+    name: Update container images
+    uses: ./.github/workflows/update-container-images.yml
+    secrets: inherit
