@@ -71,17 +71,18 @@ Use the [Create job capsules](https://github.com/dandi-compute/dandi-compute-run
 
 Nextflow pulls each AIND step's container image into `work/apptainer_cache/` the first time a step needs it, inside the capsule's 1 GB driver job. Building a multi-gigabyte image takes far more memory than that, so the pull is killed and the capsule fails before any step runs.
 
-The [Cache container images](https://github.com/dandi-compute/dandi-compute-runner/actions/workflows/cache-images.yml) workflow caches them ahead of time instead. It runs `dandicompute images missing` on the runner, and when anything is missing it submits [`launcher/cache_images.sh`](launcher/cache_images.sh), a 32 GB job on `mit_normal` that runs `dandicompute images cache`. The workflow waits for the job and prints its log. It runs after every [Update codebase](https://github.com/dandi-compute/dandi-compute-runner/actions/workflows/update-codebase.yml) run, since that is when a new pipeline tag arrives, and daily an hour before job capsules are created.
+The [Cache container images](https://github.com/dandi-compute/dandi-compute-runner/actions/workflows/cache-images.yml) workflow pulls them ahead of time instead. It works out the image tag of the latest local pipeline version, and when any of its images is not cached yet it runs the pipeline's own `pull_pipeline_images.sh` in a 32 GB job on `mit_normal`. The workflow waits for the job, prints its log, and fails if an image is still missing afterwards. It runs after every [Update codebase](https://github.com/dandi-compute/dandi-compute-runner/actions/workflows/update-codebase.yml) run, since that is when a new pipeline tag arrives, and daily an hour before job capsules are created.
 
 | Input | Description | Default |
 |---|---|---|
 | `version` | AIND ephys pipeline release tag whose images to cache. | latest local tag |
 
-To run the job by hand from a cluster shell:
+To do the same by hand from a cluster shell (the tag is `si-` plus the pipeline's `SPIKEINTERFACE_VERSION`):
 
 ```bash
-mkdir -p /orcd/data/dandi/001/dandi-compute/processing/derivatives/logs/dandicompute-images
-sbatch /orcd/data/dandi/001/dandi-compute/dandi-compute-runner/launcher/cache_images.sh
+cd /orcd/data/dandi/001/dandi-compute
+sbatch --mem=32GB --cpus-per-task=8 --partition=mit_normal --time=04:00:00 \
+  --wrap "source /etc/profile.d/modules.sh && module load apptainer && bash aind-ephys-pipeline/pull_pipeline_images.sh --cache $PWD/work/apptainer_cache --tag si-0.104.9"
 ```
 
 ## How to prepare a specific AIND job (manual)
