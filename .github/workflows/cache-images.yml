@@ -1,0 +1,126 @@
+name: Cache container images
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "AIND ephys pipeline release tag whose images to cache. Defaults to the latest local tag."
+        required: false
+        default: ""
+  workflow_call:
+    inputs:
+      version:
+        description: "AIND ephys pipeline release tag whose images to cache. Defaults to the latest local tag."
+        required: false
+        type: string
+        default: ""
+  schedule:
+    - cron: '0 23 * * *'  # An hour ahead of "Create job capsules"
+
+permissions:
+  contents: read
+  actions: read
+
+# A fixed group, since under workflow_call `github.workflow` is the caller's name and would put
+# this run in the caller's own group.
+concurrency:
+  group: cache-container-images
+  cancel-in-progress: false
+
+env:
+  DANDICOMPUTE_OOP_FAILSAFE_LOG: ${{ vars.DANDICOMPUTE_OOP_FAILSAFE_LOG }}
+
+jobs:
+  CheckEngaging:
+    name: Pre-run Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Cancel if offline
+        uses: ./.github/actions/check-runner
+        with:
+          labels: mit,engaging,submitter
+          token: ${{ secrets._GITHUB_API_KEY }}
+
+  CacheImages:
+    needs: CheckEngaging
+    name: Cache container images
+    runs-on: [self-hosted, mit, engaging, submitter]
+    timeout-minutes: 300
+    env:
+      VERSION: ${{ inputs.version }}
+
+    steps:
+      - name: List images that are not cached yet
+        id: missing
+        working-directory: /orcd/data/dandi/001/dandi-compute
+        run: |
+          VERSION_ARGS=()
+          if [ -n "$VERSION" ]; then
+            VERSION_ARGS+=(--version "$VERSION")
+          fi
+
+          missing=$(dandicompute images missing --silent "${VERSION_ARGS[@]}")
+          if [ -z "$missing" ]; then
+            echo "Every image is already cached."
+            echo "needed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Not cached yet:"
+            echo "$missing"
+            echo "needed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Cache images in a SLURM job
+        if: ${{ steps.missing.outputs.needed == 'true' }}
+        working-directory: /orcd/data/dandi/001/dandi-compute
+        run: |
+          VERSION_ARGS=()
+          if [ -n "$VERSION" ]; then
+            VERSION_ARGS+=(--version "$VERSION")
+          fi
+
+          LOG_DIRECTORY=processing/derivatives/logs/dandicompute-images
+          mkdir -p "$LOG_DIRECTORY"
+
+          # The job needs far more memory than this runner has, so it runs as its own SLURM job.
+          # --wait makes its exit code this step's, so a failed build fails the workflow.
+          set +e
+          job_id=$(sbatch --wait --parsable dandi-compute-runner/launcher/cache_images.sh "${VERSION_ARGS[@]}")
+          status=$?
+          set -e
+
+          job_id="${job_id%%;*}"
+          echo "=== Log of job ${job_id} ==="
+          cat "${LOG_DIRECTORY}/job-${job_id}_slurm.log" || echo "No log found for job ${job_id}."
+          exit "$status"
+
+  NotifyOnFailure:
+    if: ${{ always() && failure() }}  # 'always' for if any 'needs' are cancelled/skipped
+    needs: [CheckEngaging, CacheImages]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Check 24-hour cooldown
+        id: cooldown
+        uses: ./.github/actions/check-cooldown
+        with:
+          workflow_file: cache-images.yml
+          token: ${{ github.token }}
+
+      - name: Send email notification on failure
+        if: ${{ steps.cooldown.outputs.should_notify == 'true' }}
+        uses: dawidd6/action-send-mail@94de994a9f6fffee200243214e17002e2920bb59 # v18
+        with:
+          server_address: smtp.gmail.com
+          server_port: 465
+          username: ${{ secrets.MAIL_USERNAME }}
+          password: ${{ secrets.MAIL_PASSWORD }}
+          subject: "DANDI Compute: caching container images failed (MIT Engaging)"
+          to: cody.c.baker.phd@gmail.com  # Add more with comma separation (no spaces)
+          from: DANDI Compute <dandi-compute@users.noreply.github.com>
+          body: |
+            Caching the AIND ephys container images encountered an issue!
+            AIND capsules will fail to pull their images until this succeeds.
+            Please check status at: https://github.com/dandi-compute/dandi-compute-runner/actions/workflows/cache-images.yml
