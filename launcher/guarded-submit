@@ -2,10 +2,12 @@
 #
 # guarded-submit - Run a command only if pending Slurm jobs are below a threshold.
 #
-# Usage: guarded-submit [-n MAX_PD] [-u USER] [-s STATE] [-q] -- CMD [ARGS...]
+# Usage: guarded-submit [-n MAX_PD] [-N JOB_NAME] [-u USER] [-s STATE] [-q] -- CMD [ARGS...]
 #
 # Options:
 #   -n MAX_PD   Max pending jobs allowed before skipping (default: 10)
+#   -N JOB_NAME Skip if a job with this name is already pending or running, so
+#               a job waiting in the queue is not submitted again every minute
 #   -u USER     User to check (default: current user via --me)
 #   -s STATE    Slurm state(s) to count, comma-separated (default: PD)
 #   -j JITTER   Max seconds of random sleep before submitting (default: 5)
@@ -24,15 +26,17 @@ USER_FILTER="--me"
 STATE="PD"
 QUIET=0
 JITTER=5
+JOB_NAME=""
 
 usage() {
     sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'
     exit "${1:-2}"
 }
 
-while getopts ":n:u:s:j:qh" opt; do
+while getopts ":n:N:u:s:j:qh" opt; do
     case "$opt" in
         n) MAX_PD=$OPTARG ;;
+        N) JOB_NAME=$OPTARG ;;
         u) USER_FILTER="-u $OPTARG" ;;
         s) STATE=$OPTARG ;;
         q) QUIET=1 ;;
@@ -45,6 +49,15 @@ done
 shift $((OPTIND - 1))
 
 [ "$#" -ge 1 ] || { echo "Error: no command specified" >&2; usage; }
+
+if [ -n "$JOB_NAME" ]; then
+    # shellcheck disable=SC2086
+    existing=$(squeue $USER_FILTER -h -n "$JOB_NAME" -t PD,CF,R -o %i | wc -l)
+    if [ "$existing" -gt 0 ]; then
+        [ "$QUIET" -eq 1 ] || echo "$(date): $existing $JOB_NAME job(s) already pending or running, skipping: $*"
+        exit 0
+    fi
+fi
 
 # shellcheck disable=SC2086
 count=$(squeue $USER_FILTER -h -t "$STATE" -o %i | wc -l)
