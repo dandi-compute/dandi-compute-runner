@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Dispatch the process-queue GitHub Action.
+# Dispatch the "Dispatch job capsules" GitHub Action (process-queue.yml).
 #
 # Called by launch_submitter.sh once its runner is listening, so every submitter job that
 # starts dispatches exactly once. The run it leaves in the Actions tab is the record that the

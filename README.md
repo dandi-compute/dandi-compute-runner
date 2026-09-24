@@ -44,7 +44,7 @@ Each submitter job runs for up to 12 hours on `mit_preemptable`. When one starts
 
 1. starts the self-hosted runner, logging to `submitter/logs/job-{id}_runner.log` under the base directory;
 2. waits for the runner to report that it is listening, since the workflow cancels itself when no runner is online;
-3. dispatches the "Process AIND Queue" workflow onto it with [`launcher/dispatch_process_queue.sh`](launcher/dispatch_process_queue.sh), logging to `submitter/logs/job-{id}_dispatch.log`.
+3. dispatches the "Dispatch job capsules" workflow onto it with [`launcher/dispatch_job_capsules.sh`](launcher/dispatch_job_capsules.sh), logging to `submitter/logs/job-{id}_dispatch.log`.
 
 That workflow runs `dandicompute jobs dispatch --record`. It submits each pipeline's job array, and skips a pipeline whose array is still pending or running. It also records the attempt, with a snapshot of `squeue`, in `derivatives/logs/squeue/` on the Dandiset.
 
@@ -63,9 +63,9 @@ mit_preemptable|cpu=1024,gres/gpu=4,mem=4T
 
 
 
-## How to process the queue (manual)
+## How to dispatch job capsules (manual)
 
-Use the [Process queue](https://github.com/dandi-compute/dandi-compute-runner/actions/workflows/process-queue.yml) workflow dispatch.
+Use the [Dispatch job capsules](https://github.com/dandi-compute/dandi-compute-runner/actions/workflows/process-queue.yml) workflow dispatch.
 
 | Input | Description | Default |
 |---|---|---|

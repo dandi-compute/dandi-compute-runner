@@ -7,7 +7,7 @@
 
 # The crontab keeps exactly one of these jobs pending or running (guarded-submit -N), so each
 # time one starts is the cluster's own daily-or-better tick. On that tick the job starts the
-# self-hosted runner and, once it is listening, dispatches the process-queue workflow onto it.
+# self-hosted runner and, once it is listening, dispatches the "Dispatch job capsules" workflow onto it.
 # That workflow submits the job arrays (`dandicompute jobs dispatch`, which never stacks a
 # second array on a live one) and records the attempt with a squeue snapshot on the Dandiset.
 
@@ -33,7 +33,7 @@ for _ in $(seq 120); do
     sleep 5
 done
 if grep -q "Listening for Jobs" "$RUNNER_LOG_FILE_PATH"; then
-    "$BASE_DIRECTORY/dandi-compute-runner/launcher/dispatch_process_queue.sh" >> "$DISPATCH_LOG_FILE_PATH" 2>&1 \
+    "$BASE_DIRECTORY/dandi-compute-runner/launcher/dispatch_job_capsules.sh" >> "$DISPATCH_LOG_FILE_PATH" 2>&1 \
         || echo "$(date): dispatch failed; see $DISPATCH_LOG_FILE_PATH" >> "$RUNNER_LOG_FILE_PATH"
 else
     echo "$(date): runner never reported it was listening; not dispatching" >> "$RUNNER_LOG_FILE_PATH"
