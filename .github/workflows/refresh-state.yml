@@ -5,8 +5,6 @@ on:
   workflow_run:
     workflows: ["Create job capsules", "Dispatch job capsules", "Prepare AIND job", "Prepare AIND test job"]
     types: [completed]
-  schedule:
-    - cron: "0 5 * * *"
 
 permissions:
   contents: read
@@ -76,5 +74,5 @@ jobs:
           to: cody.c.baker.phd@gmail.com  # Add more with comma separation (no spaces)
           from: DANDI Compute <dandi-compute@users.noreply.github.com>
           body: |
-            The scheduled run of AIND Queue state update encountered an issue!
+            Refreshing the queue state encountered an issue!
             Please check status at: https://github.com/dandi-compute/dandi-compute-runner/actions/workflows/refresh-state.yml

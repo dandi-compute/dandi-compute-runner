@@ -45,7 +45,7 @@ jobs:
       - name: Dispatch job capsules
         working-directory: /orcd/data/dandi/001/dandi-compute
         run: |
-          PROCESS_ARGS=(jobs dispatch --base /orcd/data/dandi/001/dandi-compute --record)
+          PROCESS_ARGS=(jobs dispatch --base /orcd/data/dandi/001/dandi-compute --record --refresh)
 
           if [ "${{ inputs.test }}" = "true" ]; then
             PROCESS_ARGS+=(--test)
