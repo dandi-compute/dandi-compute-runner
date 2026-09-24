@@ -18,15 +18,15 @@ The repository is kept public to allow anyone to see the runtime logs of the sub
 
 
 
-## How to setup the runners
+## How to setup the runner
 
 1. Go to Settings -> Actions -> Runners -> New self-hosted runner -> Linux
 2. Log into https://engaging-ood.mit.edu/ -> Open a new cluster shell
 3. `cd /orcd/data/dandi/001/dandi-compute/dandi-compute-runner`
 4. Follow copy & paste instructions from Settings
 5. Use the default runner group
-6. Give the runners the name `submitter` or `monitor` (correspondingly)
-7. Add the labels `mit`, `engaging`, and `submitter` or `monitor` (correspondingly)
+6. Give the runner the name `submitter`
+7. Add the labels `mit`, `engaging`, and `submitter`
 8. Use the default work directory
 9. On the login node, install the crontab from [`launcher/crontab`](launcher/crontab):
 
@@ -35,6 +35,20 @@ The repository is kept public to allow anyone to see the runtime logs of the sub
    ```
 
    That file is the only copy of the crontab. It replaces the whole user crontab, including the backup jobs it also lists. The "Refresh state" workflow and `launcher/revive.sh` reinstall it the same way, so change the file rather than the live crontab.
+
+## How dispatch is triggered
+
+Every minute, the crontab submits [`launcher/launch_submitter.sh`](launcher/launch_submitter.sh) through `guarded-submit -N DANDI-Compute-Submitter`. That skips the submission while a submitter job is already pending or running, so one never piles up behind another.
+
+Each submitter job runs for up to 12 hours on `mit_preemptable`. When one starts, it:
+
+1. starts the self-hosted runner, logging to `submitter/logs/job-{id}_runner.log` under the base directory;
+2. waits for the runner to report that it is listening, since the workflow cancels itself when no runner is online;
+3. dispatches the "Process AIND Queue" workflow onto it with [`launcher/dispatch_process_queue.sh`](launcher/dispatch_process_queue.sh), logging to `submitter/logs/job-{id}_dispatch.log`.
+
+That workflow runs `dandicompute jobs dispatch --record`. It submits each pipeline's job array, and skips a pipeline whose array is still pending or running. It also records the attempt, with a snapshot of `squeue`, in `derivatives/logs/squeue/` on the Dandiset.
+
+So every submitter job that starts leaves two records that the cluster came up and tried to dispatch that day, even when nothing was waiting: a run in the Actions tab, and a `squeue` snapshot on DANDI.
 
 ## SLURM limits
 
