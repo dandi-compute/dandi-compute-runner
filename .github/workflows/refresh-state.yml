@@ -3,7 +3,7 @@ name: Refresh state
 on:
   workflow_dispatch:
   workflow_run:
-    workflows: ["Prepare queue", "Process AIND queue", "Prepare AIND job", "Prepare AIND test job"]
+    workflows: ["Create job capsules", "Process AIND Queue", "Prepare AIND job", "Prepare AIND test job"]
     types: [completed]
   schedule:
     - cron: "0 5 * * *"
