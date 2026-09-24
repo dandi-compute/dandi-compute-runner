@@ -2,6 +2,7 @@
 # command and exits (see launcher/tasks/). `/bin/bash -l` gives cron the login environment that
 # sbatch and the conda activation inside the jobs expect.
 */30 * * * * /bin/bash -l -c '/orcd/data/dandi/001/dandi-compute/dandi-compute-runner/launcher/submit_task.sh dispatch' > /dev/null 2>&1
+0 4 * * * /bin/bash -l -c '/orcd/data/dandi/001/dandi-compute/dandi-compute-runner/launcher/submit_task.sh images' > /dev/null 2>&1
 0 5 * * * /bin/bash -l -c '/orcd/data/dandi/001/dandi-compute/dandi-compute-runner/launcher/submit_task.sh create' > /dev/null 2>&1
 0 6 * * 0 /bin/bash -l -c '/orcd/data/dandi/001/dandi-compute/dandi-compute-runner/launcher/submit_task.sh clean' > /dev/null 2>&1
 

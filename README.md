@@ -25,6 +25,7 @@ Nothing sits idle on the cluster. The crontab on the login node submits each rec
 | Task | When | SLURM job | Runs |
 |---|---|---|---|
 | [`dispatch`](launcher/tasks/dispatch.sh) | every 30 minutes | `DANDI-Compute-Dispatch`, `mit_quicktest`, 15 min | `jobs dispatch --record --refresh` |
+| [`images`](launcher/tasks/images.sh) | daily, 04:00 | `DANDI-Compute-Images`, `mit_quicktest`, 15 min | checks the latest AIND tag's container images are cached; if not, submits [`pull_images.sh`](launcher/tasks/pull_images.sh) (`DANDI-Compute-Image-Cache`, `mit_normal`, 32 GB, 4 h) |
 | [`create`](launcher/tasks/create.sh) | daily, 05:00 | `DANDI-Compute-Create`, `mit_preemptable`, 1 h | `jobs create --limit 5` per pipeline, then `jobs refresh` |
 | [`clean`](launcher/tasks/clean.sh) | weekly, Sunday 06:00 | `DANDI-Compute-Clean`, `mit_preemptable`, 2 h | `clean --work` |
 
@@ -107,7 +108,7 @@ Use the [Create job capsules](https://github.com/dandi-compute/dandi-compute-run
 
 Nextflow pulls each AIND step's container image into `work/apptainer_cache/` the first time a step needs it, inside the capsule's 1 GB driver job. Building a multi-gigabyte image takes far more memory than that, so the pull is killed and the capsule fails before any step runs.
 
-The [Update container images](https://github.com/dandi-compute/dandi-compute-runner/actions/workflows/update-container-images.yml) workflow pulls them ahead of time instead. It works out the image tag of the latest local pipeline version, and when any of its images is not cached yet it runs the pipeline's own `pull_pipeline_images.sh` in a 32 GB job on `mit_normal`. The workflow waits for the job, prints its log, and fails if an image is still missing afterwards. It runs after every [Update codebase](https://github.com/dandi-compute/dandi-compute-runner/actions/workflows/update-codebase.yml) run, since that is when a new pipeline tag arrives, and daily an hour before job capsules are created.
+The [Update container images](https://github.com/dandi-compute/dandi-compute-runner/actions/workflows/update-container-images.yml) workflow pulls them ahead of time instead. It works out the image tag of the latest local pipeline version, and when any of its images is not cached yet it runs the pipeline's own `pull_pipeline_images.sh` in a 32 GB job on `mit_normal`. The workflow waits for the job, prints its log, and fails if an image is still missing afterwards. It runs after every [Update codebase](https://github.com/dandi-compute/dandi-compute-runner/actions/workflows/update-codebase.yml) run, since that is when a new pipeline tag arrives. The daily [`images`](launcher/tasks/images.sh) task makes the same check each morning, an hour before job capsules are created, and submits the same pull without waiting on it.
 
 | Input | Description | Default |
 |---|---|---|
