@@ -81,8 +81,7 @@ To do the same by hand from a cluster shell (the tag is `si-` plus the pipeline'
 
 ```bash
 cd /orcd/data/dandi/001/dandi-compute
-sbatch --mem=32GB --cpus-per-task=8 --partition=mit_normal --time=04:00:00 \
-  --wrap "source /etc/profile.d/modules.sh && module load apptainer && bash aind-ephys-pipeline/pull_pipeline_images.sh --cache $PWD/work/apptainer_cache --tag si-0.104.9"
+sbatch --mem=32GB --cpus-per-task=8 --partition=mit_normal --time=04:00:00 --wrap "source /etc/profile.d/modules.sh && module load apptainer && bash aind-ephys-pipeline/pull_pipeline_images.sh --cache $PWD/work/apptainer_cache --tag si-0.104.9"
 ```
 
 ## How to prepare a specific AIND job (manual)
