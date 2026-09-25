@@ -7,9 +7,20 @@ permissions:
 on:
   workflow_dispatch:
     inputs:
-      path:
-        description: "Path of the job capsule folder, relative to the job capsules Dandiset root."
+      status:
+        description: "Archive every job capsule with this status, or `none` to archive the single capsule given by `path`."
         required: true
+        type: choice
+        default: none
+        options:
+          - none
+          - failed
+          - pending
+          - stalled
+      path:
+        description: "Path of a single job capsule folder, relative to the job capsules Dandiset root. Only used when `status` is `none`."
+        required: false
+        type: string
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -46,8 +57,22 @@ jobs:
       - name: Archive job
         working-directory: /orcd/data/dandi/001/dandi-compute
         env:
+          STATUS: ${{ inputs.status }}
           CAPSULE_PATH: ${{ inputs.path }}
-        run: dandicompute archive --job "$CAPSULE_PATH" --base /orcd/data/dandi/001/dandi-compute
+        run: |
+          if [ "$STATUS" = "none" ]; then
+            if [ -z "$CAPSULE_PATH" ]; then
+              echo "::error::Provide a job capsule \`path\` or choose a \`status\` to archive."
+              exit 1
+            fi
+            dandicompute archive --job "$CAPSULE_PATH" --base /orcd/data/dandi/001/dandi-compute
+          else
+            if [ -n "$CAPSULE_PATH" ]; then
+              echo "::error::\`path\` must be empty when archiving by \`status\` ($STATUS)."
+              exit 1
+            fi
+            dandicompute archive --status "$STATUS" --base /orcd/data/dandi/001/dandi-compute
+          fi
 
   NotifyOnFailure:
     if: ${{ always() && failure() }}
