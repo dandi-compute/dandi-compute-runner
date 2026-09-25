@@ -1,6 +1,13 @@
-# DANDI Compute scheduled tasks. Each submits one short SLURM job that runs a single dandicompute
-# command and exits (see launcher/tasks/). `/bin/bash -l` gives cron the login environment that
-# sbatch and the conda activation inside the jobs expect.
+# DANDI Compute. Everything records itself in the global logs repository
+# (/orcd/data/dandi/001/dandi-compute/dandi-compute-global-logs, see launcher/record.sh).
+# `/bin/bash -l` gives cron the login environment that sbatch and conda activation expect.
+
+# The self-hosted GitHub Actions runner, kept up on this login node, and a squeue snapshot.
+*/5 * * * * /bin/bash -l -c '/orcd/data/dandi/001/dandi-compute/dandi-compute-runner/launcher/launch_runner.sh' > /dev/null 2>&1
+*/5 * * * * /bin/bash -l -c '/orcd/data/dandi/001/dandi-compute/dandi-compute-runner/launcher/monitor.sh' > /dev/null 2>&1
+
+# Scheduled tasks. Each submits one short SLURM job that runs a single dandicompute command and
+# exits (see launcher/tasks/).
 */30 * * * * /bin/bash -l -c '/orcd/data/dandi/001/dandi-compute/dandi-compute-runner/launcher/submit_task.sh dispatch' > /dev/null 2>&1
 0 4 * * * /bin/bash -l -c '/orcd/data/dandi/001/dandi-compute/dandi-compute-runner/launcher/submit_task.sh images' > /dev/null 2>&1
 0 5 * * * /bin/bash -l -c '/orcd/data/dandi/001/dandi-compute/dandi-compute-runner/launcher/submit_task.sh create' > /dev/null 2>&1

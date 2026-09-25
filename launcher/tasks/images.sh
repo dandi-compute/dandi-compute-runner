@@ -8,12 +8,14 @@
 # Once a day, an hour ahead of `create`: check that the container images of the latest AIND
 # pipeline tag are cached, and when any is missing, submit pull_images.sh to pull them in a
 # high-memory job. This job does not wait for that one; the pull checks its own result.
+# Record this run in the global logs repository (see launcher/record.sh).
+[ -n "${DANDI_COMPUTE_RECORDED:-}" ] || exec /orcd/data/dandi/001/dandi-compute/dandi-compute-runner/launcher/record.sh logs images -- bash /orcd/data/dandi/001/dandi-compute/dandi-compute-runner/launcher/tasks/images.sh "$@"
 set -euo pipefail
 source /orcd/data/dandi/001/dandi-compute/dandi-compute-runner/launcher/tasks/environment.sh
 
 PIPELINE_DIRECTORY=aind-ephys-pipeline
 CACHE_DIRECTORY="$BASE_DIRECTORY/work/apptainer_cache"
-LOG_DIRECTORY="$BASE_DIRECTORY/processing/derivatives/logs/dandicompute-images"
+LOG_DIRECTORY="$BASE_DIRECTORY/dandi-compute-global-logs/untracked/slurm"
 LAUNCHER_DIRECTORY="$BASE_DIRECTORY/dandi-compute-runner/launcher"
 
 # The latest local tag is what new job capsules are formed against. Its files are read with
@@ -34,6 +36,7 @@ if "$LAUNCHER_DIRECTORY/tasks/pull_images.sh" --check "$CACHE_DIRECTORY" "$CONTA
 fi
 
 mkdir -p "$LOG_DIRECTORY"
+# The pull records itself, so it is not handed this task's own marker of being recorded.
 "$LAUNCHER_DIRECTORY/guarded-submit" -N DANDI-Compute-Image-Cache -- \
-    sbatch --output="$LOG_DIRECTORY/job-%j_slurm.log" \
+    sbatch --export=ALL,DANDI_COMPUTE_RECORDED= --output="$LOG_DIRECTORY/pull-images-%j.log" \
     "$LAUNCHER_DIRECTORY/tasks/pull_images.sh" "$BASE_DIRECTORY/$PIPELINE_DIRECTORY" "$TAG" "$CACHE_DIRECTORY" "$CONTAINER_TAG"

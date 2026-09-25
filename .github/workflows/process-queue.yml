@@ -40,12 +40,17 @@ jobs:
     needs: CheckEngaging
     name: Dispatch job capsules
     runs-on: [self-hosted, mit, engaging, submitter]
+    # Each step records itself in the global logs repository (see launcher/record.sh); the shell
+    # after `--` is GitHub's own default for bash.
+    defaults:
+      run:
+        shell: /orcd/data/dandi/001/dandi-compute/dandi-compute-runner/launcher/record.sh logs dispatch-job-capsules -- bash --noprofile --norc -eo pipefail {0}
 
     steps:
       - name: Dispatch job capsules
         working-directory: /orcd/data/dandi/001/dandi-compute
         run: |
-          PROCESS_ARGS=(jobs dispatch --base /orcd/data/dandi/001/dandi-compute --record --refresh)
+          PROCESS_ARGS=(jobs dispatch --base /orcd/data/dandi/001/dandi-compute --refresh)
 
           if [ "${{ inputs.test }}" = "true" ]; then
             PROCESS_ARGS+=(--test)
@@ -55,6 +60,7 @@ jobs:
           flock -n ./flocks/process_queue.lock dandicompute "${PROCESS_ARGS[@]}"
 
       - name: Wait before finishing
+        shell: bash
         run: sleep 120
 
   NotifyOnFailure:

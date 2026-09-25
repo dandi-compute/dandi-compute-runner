@@ -18,33 +18,63 @@ The repository is kept public to allow anyone to see the runtime logs of the sub
 
 
 
+## Global logs
+
+Every operation on the cluster records itself in the global logs repository,
+[dandi-compute-global-logs](https://github.com/dandi-compute/dandi-compute-global-logs), checked out at `/orcd/data/dandi/001/dandi-compute/dandi-compute-global-logs`. That covers the scheduled tasks, every step of the workflows below, and a `squeue` snapshot every 5 minutes. The logs of job capsules themselves stay with each capsule and go to DANDI with it.
+
+Records land on a branch per day (`YYYY-MM-DD`), under `logs/` for operations and `monitor/` for the snapshots, so old days can be dropped as branches. Each record is a `datalad run` commit, which holds the exact command, where it ran and its exit status. It is made inside [duct](https://github.com/con/duct), which adds timing and resource usage beside the command's output.
+
+[`launcher/record.sh`](launcher/record.sh) does the recording:
+
+```bash
+launcher/record.sh logs <name> -- <command> [args...]
+```
+
+It never stops the work and never drops a record. Whatever goes wrong while recording is written to a `record.log` beside the output:
+
+- **No DataLad:** the command still runs, and its output is committed with plain git.
+- **Shared checkout busy or broken:** the record is pushed straight to GitHub.
+- **GitHub unreachable:** the record is kept under `untracked/unpushed/` in the checkout, and the next record that gets through commits it under `recovered/`.
+
+The raw output of each SLURM job and of the runner also goes to `untracked/` in the checkout, in case recording itself fails.
+
 ## Scheduled tasks
 
 Nothing sits idle on the cluster. The crontab on the login node submits each recurring task as a short SLURM job that runs one `dandicompute` command and exits:
 
 | Task | When | SLURM job | Runs |
 |---|---|---|---|
-| [`dispatch`](launcher/tasks/dispatch.sh) | every 30 minutes | `DANDI-Compute-Dispatch`, `mit_quicktest`, 15 min | `jobs dispatch --record --refresh` |
+| [`dispatch`](launcher/tasks/dispatch.sh) | every 30 minutes | `DANDI-Compute-Dispatch`, `mit_quicktest`, 15 min | `jobs dispatch --refresh` |
 | [`images`](launcher/tasks/images.sh) | daily, 04:00 | `DANDI-Compute-Images`, `mit_quicktest`, 15 min | checks the latest AIND tag's container images are cached; if not, submits [`pull_images.sh`](launcher/tasks/pull_images.sh) (`DANDI-Compute-Image-Cache`, `mit_normal`, 32 GB, 4 h) |
 | [`create`](launcher/tasks/create.sh) | daily, 05:00 | `DANDI-Compute-Create`, `mit_preemptable`, 1 h | `jobs create --limit 5` per pipeline, then `jobs refresh` |
 | [`clean`](launcher/tasks/clean.sh) | weekly, Sunday 06:00 | `DANDI-Compute-Clean`, `mit_preemptable`, 2 h | `clean --work` |
 
-Each cron line calls [`launcher/submit_task.sh`](launcher/submit_task.sh), which submits the task through `guarded-submit -N <job name>`. That skips the submission while a job of the same name is still pending or running, so a task that is slow to start never piles up copies of itself. Each job writes its output to `cron/logs/{task}-{job id}.log` under the base directory.
+Each cron line calls [`launcher/submit_task.sh`](launcher/submit_task.sh), which submits the task through `guarded-submit -N <job name>`. That skips the submission while a job of the same name is still pending or running, so a task that is slow to start never piles up copies of itself.
 
-A dispatch skips any pipeline whose job array is still pending or running. When every pipeline's array is, it skips before reading anything, so an attempt while arrays churn costs seconds. Every attempt, skipped or not, adds one line to the day's log in `derivatives/logs/dispatch/` on the Dandiset. An attempt that submits an array also posts a `squeue` snapshot to `derivatives/logs/squeue/`, and every attempt that was not skipped rewrites `jobs.tsv`.
+A dispatch skips any pipeline whose job array is still pending or running. When every pipeline's array is, it skips before reading anything, so an attempt while arrays churn costs seconds. Every attempt that was not skipped rewrites `jobs.tsv`.
+
+The login node also runs, every 5 minutes, [`launcher/monitor.sh`](launcher/monitor.sh) (the `squeue` snapshot) and [`launcher/launch_runner.sh`](launcher/launch_runner.sh) (see below).
 
 ### Setup
 
-1. The tasks run outside GitHub Actions, so the secrets the workflows inject have to come from `~/.dandi_env` instead. The job arrays a dispatch submits inherit its environment, so it needs everything a capsule run needs:
+1. The tasks run outside GitHub Actions, so the secrets the workflows inject have to come from `~/.dandi_env` instead. The job arrays a dispatch submits inherit its environment, so it needs everything a capsule run needs. It also needs a `GH_TOKEN` that can push to dandi-compute-global-logs:
 
    ```bash
    export DANDI_API_KEY=...
    export DANDI_DEVEL=...
    export KACHERY_API_KEY=...
+   export GH_TOKEN=...                       # contents: write on dandi-compute-global-logs
    export DANDICOMPUTE_OOP_FAILSAFE_LOG=...  # if used
    ```
 
-2. On the login node, install the crontab from [`launcher/crontab`](launcher/crontab):
+2. Clone the global logs repository where the scripts expect it. Recording uses DataLad and duct from `/orcd/data/dandi/001/environments/name-datalad_env`, and records plainly without them:
+
+   ```bash
+   git clone https://github.com/dandi-compute/dandi-compute-global-logs /orcd/data/dandi/001/dandi-compute/dandi-compute-global-logs
+   ```
+
+3. On the login node, install the crontab from [`launcher/crontab`](launcher/crontab):
 
    ```bash
    crontab /orcd/data/dandi/001/dandi-compute/dandi-compute-runner/launcher/crontab
@@ -52,15 +82,9 @@ A dispatch skips any pipeline whose job array is still pending or running. When 
 
    That file is the only copy of the crontab. It replaces the whole user crontab, including the backup jobs it also lists. The "Refresh state" workflow and `launcher/revive.sh` reinstall it the same way, so change the file rather than the live crontab.
 
-## Running a workflow by hand
+## The self-hosted runner
 
-The workflows in this repository run on a self-hosted runner labelled `submitter`, which is no longer kept online. To run one (updating the codebase, archiving a job, preparing a test job, or any scheduled task on demand), start the runner first:
-
-```bash
-sbatch /orcd/data/dandi/001/dandi-compute/dandi-compute-runner/launcher/launch_submitter.sh
-```
-
-It stays up for as long as the job's time limit allows. Cancel it with `scancel --name DANDI-Compute-Submitter` once the workflow is done.
+The workflows in this repository run on a self-hosted runner labelled `submitter`. It runs on the login node rather than in a SLURM job, since its steps only do light work and submit sbatch jobs for anything heavy. The crontab calls [`launcher/launch_runner.sh`](launcher/launch_runner.sh) every 5 minutes, which starts the runner under a lock, so it comes back within 5 minutes of stopping. Its output goes to `untracked/runner/` in the global logs checkout, and each workflow step records itself there through `record.sh`.
 
 To register the runner in the first place:
 

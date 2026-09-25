@@ -13,6 +13,11 @@
 #        pull_images.sh --check CACHE_DIRECTORY CONTAINER_TAG   (exit 0 when every image is cached)
 set -euo pipefail
 
+if [ "${1:-}" != "--check" ] && [ -z "${DANDI_COMPUTE_RECORDED:-}" ]; then
+    # Record this run in the global logs repository (see launcher/record.sh).
+    exec /orcd/data/dandi/001/dandi-compute/dandi-compute-runner/launcher/record.sh logs pull-images -- bash /orcd/data/dandi/001/dandi-compute/dandi-compute-runner/launcher/tasks/pull_images.sh "$@"
+fi
+
 # The images upstream's script pulls by default (--sorter kilosort4), under the file names
 # Nextflow looks for.
 missing_images() {

@@ -38,6 +38,11 @@ jobs:
     permissions:
       contents: read
     runs-on: [self-hosted, mit, engaging, submitter]
+    # Each step records itself in the global logs repository (see launcher/record.sh); the shell
+    # after `--` is GitHub's own default for bash.
+    defaults:
+      run:
+        shell: /orcd/data/dandi/001/dandi-compute/dandi-compute-runner/launcher/record.sh logs create-job-capsules -- bash --noprofile --norc -eo pipefail {0}
 
     steps:
       - name: Ensure DANDI CLI is kept up-to-date
@@ -54,6 +59,7 @@ jobs:
           done
 
       - name: Wait before finishing
+        shell: bash
         run: sleep 120
 
   NotifyOnFailure:

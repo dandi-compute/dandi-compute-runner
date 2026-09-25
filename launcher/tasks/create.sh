@@ -7,6 +7,8 @@
 
 # Once a day: create up to 5 job capsules per pipeline, then rewrite jobs.tsv so they show
 # as pending without waiting for the next dispatch that is not skipped.
+# Record this run in the global logs repository (see launcher/record.sh).
+[ -n "${DANDI_COMPUTE_RECORDED:-}" ] || exec /orcd/data/dandi/001/dandi-compute/dandi-compute-runner/launcher/record.sh logs create -- bash /orcd/data/dandi/001/dandi-compute/dandi-compute-runner/launcher/tasks/create.sh "$@"
 set -euo pipefail
 source /orcd/data/dandi/001/dandi-compute/dandi-compute-runner/launcher/tasks/environment.sh
 

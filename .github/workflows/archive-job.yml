@@ -37,6 +37,11 @@ jobs:
     needs: CheckEngaging
     name: Archive job
     runs-on: [self-hosted, mit, engaging, submitter]
+    # Each step records itself in the global logs repository (see launcher/record.sh); the shell
+    # after `--` is GitHub's own default for bash.
+    defaults:
+      run:
+        shell: /orcd/data/dandi/001/dandi-compute/dandi-compute-runner/launcher/record.sh logs archive-job -- bash --noprofile --norc -eo pipefail {0}
 
     steps:
       - name: Ensure DANDI CLI is kept up-to-date
