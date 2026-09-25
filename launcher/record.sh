@@ -59,34 +59,14 @@ note() {
     [ -n "$WORK_DIRECTORY" ] && echo "$(date '+%F %T') $*" >> "$NOTES"
 }
 
-# ~/.dandi_env carries GH_TOKEN for pushing (and the secrets the tasks need).
-set +u
-# shellcheck disable=SC1091
-[ -f "$HOME/.dandi_env" ] && source "$HOME/.dandi_env"
-set -u
-
 # Commits need an identity even where git has none configured.
 git config user.email > /dev/null 2>&1 || export GIT_AUTHOR_NAME="DANDI Compute" GIT_AUTHOR_EMAIL="dandi-compute@users.noreply.github.com" \
     GIT_COMMITTER_NAME="DANDI Compute" GIT_COMMITTER_EMAIL="dandi-compute@users.noreply.github.com"
 
-# Push with GH_TOKEN when there is one, without putting it on the command line.
-git_push() {
-    local repository="$1"
-    shift
-    if [ -n "${GH_TOKEN:-}" ]; then
-        git -C "$repository" -c credential.helper= \
-            -c credential.helper='!f() { test "$1" = get && echo username=x-access-token && echo "password=${GH_TOKEN}"; }; f' \
-            push "$@"
-    else
-        git -C "$repository" push "$@"
-    fi
-}
-
-# Where to reach GitHub outside the shared checkout. Without GH_TOKEN, that is the checkout's own
-# origin, which may carry its credentials in the URL (https://x-access-token:...@github.com/...).
+# Where to reach GitHub outside the shared checkout: the checkout's own origin, whose URL carries
+# its credentials (https://x-access-token:...@github.com/...).
 github_url() {
-    [ -z "${GH_TOKEN:-}" ] && git -C "$LOG_REPOSITORY" remote get-url origin 2> /dev/null && return 0
-    echo "$LOG_REPOSITORY_URL"
+    git -C "$LOG_REPOSITORY" remote get-url origin 2> /dev/null || echo "$LOG_REPOSITORY_URL"
 }
 
 # Credentials in URLs never go into a record.
@@ -261,7 +241,7 @@ move_onto_shared_branch() {
 
     local attempt
     for attempt in 1 2 3; do
-        git_push "$LOG_REPOSITORY" -q origin "$BRANCH" 2>> "$NOTES" && return 0
+        git -C "$LOG_REPOSITORY" push -q origin "$BRANCH" 2>> "$NOTES" && return 0
         git -C "$LOG_REPOSITORY" pull -q --rebase origin "$BRANCH" 2>> "$NOTES" || true
         sleep $((attempt * 5))
     done
@@ -277,7 +257,7 @@ deliver_directly() {
         if git -C "$CLONE" fetch -q "$url" "$BRANCH" 2>> "$NOTES"; then
             git -C "$CLONE" rebase -q FETCH_HEAD 2>> "$NOTES" || { git -C "$CLONE" rebase --abort; note "could not rebase onto GitHub's $BRANCH"; }
         fi
-        git_push "$CLONE" -q "$url" "HEAD:refs/heads/$BRANCH" 2>> "$NOTES" && return 0
+        git -C "$CLONE" push -q "$url" "HEAD:refs/heads/$BRANCH" 2>> "$NOTES" && return 0
         sleep $((attempt * 5))
     done
     note "could not push to GitHub"

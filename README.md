@@ -74,7 +74,7 @@ The login node also runs, every 5 minutes, [`launcher/monitor.sh`](launcher/moni
    chmod 600 /orcd/data/dandi/001/dandi-compute/dandi-compute-global-logs/.git/config
    ```
 
-   The token needs contents: write on dandi-compute-global-logs. Records are pushed with the clone's origin, and so is a record pushed straight to GitHub when the checkout is busy. Alternatively, clone without credentials and put `export GH_TOKEN=<token>` in `~/.dandi_env`, which then takes precedence. Credentials in URLs are masked in every `record.log`.
+   The token needs contents: write on dandi-compute-global-logs. Records are pushed with the clone's origin, and so is a record pushed straight to GitHub when the checkout is busy. Credentials in URLs are masked in every `record.log`.
 
 3. On the login node, install the crontab from [`launcher/crontab`](launcher/crontab):
 
