@@ -7,9 +7,29 @@ permissions:
 on:
   workflow_dispatch:
     inputs:
-      path:
-        description: "Path of the job capsule folder, relative to the job capsules Dandiset root."
+      status:
+        description: "Archive every job capsule with this status. Combine with `pipeline` to narrow it to one pipeline."
         required: true
+        type: choice
+        default: none
+        options:
+          - none
+          - failed
+          - pending
+          - stalled
+      pipeline:
+        description: "Archive every job capsule of this pipeline, whatever its status unless `status` is also set."
+        required: true
+        type: choice
+        default: none
+        options:
+          - none
+          - aind+ephys
+          - lfp
+      path:
+        description: "Path of a single job capsule folder, relative to the job capsules Dandiset root. Only used when `status` and `pipeline` are both `none`."
+        required: false
+        type: string
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -51,8 +71,30 @@ jobs:
       - name: Archive job
         working-directory: /orcd/data/dandi/001/dandi-compute
         env:
+          STATUS: ${{ inputs.status }}
+          PIPELINE: ${{ inputs.pipeline }}
           CAPSULE_PATH: ${{ inputs.path }}
-        run: dandicompute archive --job "$CAPSULE_PATH" --base /orcd/data/dandi/001/dandi-compute
+        run: |
+          if [ "$STATUS" = "none" ] && [ "$PIPELINE" = "none" ]; then
+            if [ -z "$CAPSULE_PATH" ]; then
+              echo "::error::Provide a job capsule \`path\`, or choose a \`status\` and/or \`pipeline\` to archive."
+              exit 1
+            fi
+            dandicompute archive --job "$CAPSULE_PATH" --base /orcd/data/dandi/001/dandi-compute
+          else
+            if [ -n "$CAPSULE_PATH" ]; then
+              echo "::error::\`path\` must be empty when archiving by \`status\` ($STATUS) or \`pipeline\` ($PIPELINE)."
+              exit 1
+            fi
+            FILTERS=()
+            if [ "$STATUS" != "none" ]; then
+              FILTERS+=(--status "$STATUS")
+            fi
+            if [ "$PIPELINE" != "none" ]; then
+              FILTERS+=(--pipeline "$PIPELINE")
+            fi
+            dandicompute archive "${FILTERS[@]}" --base /orcd/data/dandi/001/dandi-compute
+          fi
 
   NotifyOnFailure:
     if: ${{ always() && failure() }}
@@ -76,9 +118,9 @@ jobs:
           server_port: 465
           username: ${{ secrets.MAIL_USERNAME }}
           password: ${{ secrets.MAIL_PASSWORD }}
-          subject: "DANDI Compute: AIND job archiving failed (MIT Engaging dispatch)"
+          subject: "DANDI Compute: job archiving failed (MIT Engaging dispatch)"
           to: cody.c.baker.phd@gmail.com  # Add more with comma separation (no spaces)
           from: DANDI Compute <dandi-compute@users.noreply.github.com>
           body: |
-            The manual dispatch of AIND job archive encountered an issue!
+            The manual dispatch of job archive encountered an issue!
             Please check status at: https://github.com/dandi-compute/dandi-compute-runner/actions/workflows/archive-job.yml
