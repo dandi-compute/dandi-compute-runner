@@ -82,6 +82,16 @@ git_push() {
     fi
 }
 
+# Where to reach GitHub outside the shared checkout. Without GH_TOKEN, that is the checkout's own
+# origin, which may carry its credentials in the URL (https://x-access-token:...@github.com/...).
+github_url() {
+    [ -z "${GH_TOKEN:-}" ] && git -C "$LOG_REPOSITORY" remote get-url origin 2> /dev/null && return 0
+    echo "$LOG_REPOSITORY_URL"
+}
+
+# Credentials in URLs never go into a record.
+redact() { sed -E 's#(://)[^/@[:space:]]+@#\1***@#g'; }
+
 # --- run the command ------------------------------------------------------------------------
 
 # The throwaway clone starts from the day's branch when the shared checkout has one, from main
@@ -95,8 +105,10 @@ prepare_clone() {
     fi
     note "could not clone the shared checkout at $LOG_REPOSITORY; cloning from GitHub instead"
     rm -rf "$CLONE"
-    git ls-remote --exit-code --heads "$LOG_REPOSITORY_URL" "$BRANCH" > /dev/null 2>&1 && base="$BRANCH" || base=main
-    git clone -q --depth 1 --single-branch --branch "$base" "$LOG_REPOSITORY_URL" "$CLONE" 2>> "$NOTES" && return 0
+    local url
+    url=$(github_url)
+    git ls-remote --exit-code --heads "$url" "$BRANCH" > /dev/null 2>&1 && base="$BRANCH" || base=main
+    git clone -q --depth 1 --single-branch --branch "$base" "$url" "$CLONE" 2>> "$NOTES" && return 0
     note "could not clone from GitHub either; starting an empty repository"
     rm -rf "$CLONE"
     git init -q -b "$BRANCH" "$CLONE"
@@ -188,7 +200,7 @@ run_without_datalad() {
 
 commit_pending() {
     local message="$1"
-    [ -s "$NOTES" ] && cp "$NOTES" "$CLONE/$OUTPUT_PATH/record.log"
+    [ -s "$NOTES" ] && redact < "$NOTES" > "$CLONE/$OUTPUT_PATH/record.log"
     git -C "$CLONE" add -A -- "$OUTPUT_PATH" 2>> "$NOTES"
     git -C "$CLONE" diff --cached --quiet || git -C "$CLONE" commit -q -m "$message" 2>> "$NOTES"
 }
@@ -259,12 +271,13 @@ move_onto_shared_branch() {
 
 # Push the clone's commits straight to the day's branch on GitHub.
 deliver_directly() {
-    local attempt
+    local attempt url
+    url=$(github_url)
     for attempt in 1 2 3; do
-        if git -C "$CLONE" fetch -q "$LOG_REPOSITORY_URL" "$BRANCH" 2>> "$NOTES"; then
+        if git -C "$CLONE" fetch -q "$url" "$BRANCH" 2>> "$NOTES"; then
             git -C "$CLONE" rebase -q FETCH_HEAD 2>> "$NOTES" || { git -C "$CLONE" rebase --abort; note "could not rebase onto GitHub's $BRANCH"; }
         fi
-        git_push "$CLONE" -q "$LOG_REPOSITORY_URL" "HEAD:refs/heads/$BRANCH" 2>> "$NOTES" && return 0
+        git_push "$CLONE" -q "$url" "HEAD:refs/heads/$BRANCH" 2>> "$NOTES" && return 0
         sleep $((attempt * 5))
     done
     note "could not push to GitHub"
@@ -274,7 +287,7 @@ deliver_directly() {
 # Last resort: keep the record's files beside the shared checkout for the next delivery.
 park() {
     local parked="$LOG_REPOSITORY/untracked/unpushed/$DATE/$(basename "$OUTPUT_PATH")"
-    mkdir -p "$parked" && cp -r "$CLONE/$OUTPUT_PATH/." "$parked/" && cp "$NOTES" "$parked/record.log" \
+    mkdir -p "$parked" && cp -r "$CLONE/$OUTPUT_PATH/." "$parked/" && redact < "$NOTES" > "$parked/record.log" \
         && note "parked the record in $parked" && return 0
     echo "[record.sh] could not park the record; it is lost: $OUTPUT_PATH" >&2
 }
@@ -302,7 +315,7 @@ main() {
     elif ! deliver_through_shared_checkout; then
         commit_pending "[DANDI Compute] $NAME: record.log (delivery)"
         deliver_directly || park
-    elif [ -s "$NOTES" ] && ! cmp -s "$NOTES" "$CLONE/$OUTPUT_PATH/record.log"; then
+    elif [ -s "$NOTES" ] && ! redact < "$NOTES" | cmp -s - "$CLONE/$OUTPUT_PATH/record.log"; then
         # Problems met while delivering belong in the record too.
         commit_pending "[DANDI Compute] $NAME: record.log (delivery)"
         deliver_through_shared_checkout || deliver_directly || park

@@ -58,21 +58,23 @@ The login node also runs, every 5 minutes, [`launcher/monitor.sh`](launcher/moni
 
 ### Setup
 
-1. The tasks run outside GitHub Actions, so the secrets the workflows inject have to come from `~/.dandi_env` instead. The job arrays a dispatch submits inherit its environment, so it needs everything a capsule run needs. It also needs a `GH_TOKEN` that can push to dandi-compute-global-logs:
+1. The tasks run outside GitHub Actions, so the secrets the workflows inject have to come from `~/.dandi_env` instead. The job arrays a dispatch submits inherit its environment, so it needs everything a capsule run needs.
 
    ```bash
    export DANDI_API_KEY=...
    export DANDI_DEVEL=...
    export KACHERY_API_KEY=...
-   export GH_TOKEN=...                       # contents: write on dandi-compute-global-logs
    export DANDICOMPUTE_OOP_FAILSAFE_LOG=...  # if used
    ```
 
 2. Clone the global logs repository where the scripts expect it. Recording uses DataLad and duct from `/orcd/data/dandi/001/environments/name-datalad_env`, and records plainly without them:
 
    ```bash
-   git clone https://github.com/dandi-compute/dandi-compute-global-logs /orcd/data/dandi/001/dandi-compute/dandi-compute-global-logs
+   git clone https://x-access-token:<token>@github.com/dandi-compute/dandi-compute-global-logs /orcd/data/dandi/001/dandi-compute/dandi-compute-global-logs
+   chmod 600 /orcd/data/dandi/001/dandi-compute/dandi-compute-global-logs/.git/config
    ```
+
+   The token needs contents: write on dandi-compute-global-logs. Records are pushed with the clone's origin, and so is a record pushed straight to GitHub when the checkout is busy. Alternatively, clone without credentials and put `export GH_TOKEN=<token>` in `~/.dandi_env`, which then takes precedence. Credentials in URLs are masked in every `record.log`.
 
 3. On the login node, install the crontab from [`launcher/crontab`](launcher/crontab):
 
