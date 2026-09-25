@@ -1,4 +1,4 @@
-name: Process AIND Queue
+name: Dispatch job capsules
 
 on:
   workflow_dispatch:
@@ -36,16 +36,21 @@ jobs:
           labels: mit,engaging,submitter
           token: ${{ secrets._GITHUB_API_KEY }}
 
-  ProcessAINDQueue:
+  DispatchJobCapsules:
     needs: CheckEngaging
-    name: Process AIND Queue
+    name: Dispatch job capsules
     runs-on: [self-hosted, mit, engaging, submitter]
+    # Each step records itself in the global logs repository (see launcher/record.sh); the shell
+    # after `--` is GitHub's own default for bash.
+    defaults:
+      run:
+        shell: /orcd/data/dandi/001/dandi-compute/dandi-compute-runner/launcher/record.sh logs dispatch-job-capsules -- bash --noprofile --norc -eo pipefail {0}
 
     steps:
-      - name: Run queue processing script
+      - name: Dispatch job capsules
         working-directory: /orcd/data/dandi/001/dandi-compute
         run: |
-          PROCESS_ARGS=(jobs dispatch --base /orcd/data/dandi/001/dandi-compute)
+          PROCESS_ARGS=(jobs dispatch --base /orcd/data/dandi/001/dandi-compute --refresh)
 
           if [ "${{ inputs.test }}" = "true" ]; then
             PROCESS_ARGS+=(--test)
@@ -55,11 +60,12 @@ jobs:
           flock -n ./flocks/process_queue.lock dandicompute "${PROCESS_ARGS[@]}"
 
       - name: Wait before finishing
+        shell: bash
         run: sleep 120
 
   NotifyOnFailure:
     if: ${{ always() && failure() }}  # 'always' for if any 'needs' are cancelled/skipped
-    needs: [CheckEngaging, ProcessAINDQueue]
+    needs: [CheckEngaging, DispatchJobCapsules]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -68,7 +74,7 @@ jobs:
         id: cooldown
         uses: ./.github/actions/check-cooldown
         with:
-          workflow_file: process_queue.yml
+          workflow_file: process-queue.yml
           token: ${{ github.token }}
 
       - name: Send email notification on failure
@@ -79,9 +85,9 @@ jobs:
           server_port: 465
           username: ${{ secrets.MAIL_USERNAME }}
           password: ${{ secrets.MAIL_PASSWORD }}
-          subject: "DANDI Compute: AIND Queue processing failed (MIT Engaging dispatch)"
+          subject: "DANDI Compute: dispatching job capsules failed (MIT Engaging dispatch)"
           to: cody.c.baker.phd@gmail.com  # Add more with comma separation (no spaces)
           from: DANDI Compute <dandi-compute@users.noreply.github.com>
           body: |
-            The scheduled run of AIND Ephys pipeline encountered an issue!
+            Dispatching job capsules encountered an issue!
             Please check status at: https://github.com/dandi-compute/dandi-compute-runner/actions/workflows/process-queue.yml

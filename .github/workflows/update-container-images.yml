@@ -14,8 +14,6 @@ on:
         required: false
         type: string
         default: ""
-  schedule:
-    - cron: '0 23 * * *'  # An hour ahead of "Create job capsules"
 
 permissions:
   contents: read
@@ -47,6 +45,11 @@ jobs:
     needs: CheckEngaging
     name: Update container images
     runs-on: [self-hosted, mit, engaging, submitter]
+    # Each step records itself in the global logs repository (see launcher/record.sh); the shell
+    # after `--` is GitHub's own default for bash.
+    defaults:
+      run:
+        shell: /orcd/data/dandi/001/dandi-compute/dandi-compute-runner/launcher/record.sh logs update-container-images -- bash --noprofile --norc -eo pipefail {0}
     timeout-minutes: 300
     env:
       VERSION: ${{ inputs.version }}

@@ -5,7 +5,7 @@ description: >
 
 inputs:
   workflow_file:
-    description: "The workflow filename (e.g., process_queue.yml)."
+    description: "The workflow filename (e.g., process-queue.yml)."
     required: true
   token:
     description: "GitHub token used to query workflow run history."

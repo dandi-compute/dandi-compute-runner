@@ -3,10 +3,8 @@ name: Refresh state
 on:
   workflow_dispatch:
   workflow_run:
-    workflows: ["Create job capsules", "Process AIND Queue", "Prepare AIND job", "Prepare AIND test job"]
+    workflows: ["Create job capsules", "Dispatch job capsules", "Prepare AIND job", "Prepare AIND test job"]
     types: [completed]
-  schedule:
-    - cron: "0 5 * * *"
 
 permissions:
   contents: read
@@ -39,6 +37,11 @@ jobs:
     if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success' }}
     name: Update queue state
     runs-on: [self-hosted, mit, engaging, submitter]
+    # Each step records itself in the global logs repository (see launcher/record.sh); the shell
+    # after `--` is GitHub's own default for bash.
+    defaults:
+      run:
+        shell: /orcd/data/dandi/001/dandi-compute/dandi-compute-runner/launcher/record.sh logs refresh-state -- bash --noprofile --norc -eo pipefail {0}
 
     steps:
       - name: Update queue state
@@ -76,5 +79,5 @@ jobs:
           to: cody.c.baker.phd@gmail.com  # Add more with comma separation (no spaces)
           from: DANDI Compute <dandi-compute@users.noreply.github.com>
           body: |
-            The scheduled run of AIND Queue state update encountered an issue!
+            Refreshing the queue state encountered an issue!
             Please check status at: https://github.com/dandi-compute/dandi-compute-runner/actions/workflows/refresh-state.yml
