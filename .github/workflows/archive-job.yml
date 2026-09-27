@@ -11,9 +11,9 @@ on:
         description: "Archive every job capsule with this status. Combine with `pipeline` to narrow it to one pipeline."
         required: true
         type: choice
-        default: none
+        default: all
         options:
-          - none
+          - all
           - failed
           - pending
           - stalled
@@ -21,13 +21,13 @@ on:
         description: "Archive every job capsule of this pipeline, whatever its status unless `status` is also set."
         required: true
         type: choice
-        default: none
+        default: all
         options:
-          - none
+          - all
           - aind+ephys
           - lfp
       path:
-        description: "Path of a single job capsule folder, relative to the job capsules Dandiset root. Only used when `status` and `pipeline` are both `none`."
+        description: "Path of a single job capsule folder, relative to the job capsules Dandiset root. Only used when `status` and `pipeline` are both `all`."
         required: false
         type: string
 
@@ -75,7 +75,7 @@ jobs:
           PIPELINE: ${{ inputs.pipeline }}
           CAPSULE_PATH: ${{ inputs.path }}
         run: |
-          if [ "$STATUS" = "none" ] && [ "$PIPELINE" = "none" ]; then
+          if [ "$STATUS" = "all" ] && [ "$PIPELINE" = "all" ]; then
             if [ -z "$CAPSULE_PATH" ]; then
               echo "::error::Provide a job capsule \`path\`, or choose a \`status\` and/or \`pipeline\` to archive."
               exit 1
@@ -87,10 +87,10 @@ jobs:
               exit 1
             fi
             FILTERS=()
-            if [ "$STATUS" != "none" ]; then
+            if [ "$STATUS" != "all" ]; then
               FILTERS+=(--status "$STATUS")
             fi
-            if [ "$PIPELINE" != "none" ]; then
+            if [ "$PIPELINE" != "all" ]; then
               FILTERS+=(--pipeline "$PIPELINE")
             fi
             dandicompute archive "${FILTERS[@]}" --base /orcd/data/dandi/001/dandi-compute
