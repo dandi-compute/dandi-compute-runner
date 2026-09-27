@@ -60,7 +60,6 @@ jobs:
           flock -n ./flocks/process_queue.lock dandicompute "${PROCESS_ARGS[@]}"
 
       - name: Wait before finishing
-
         shell: bash
         run: sleep 120
 

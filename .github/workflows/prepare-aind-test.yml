@@ -69,7 +69,6 @@ jobs:
           dandicompute "${PREPARE_ARGS[@]}"
 
       - name: Wait before finishing
-
         shell: bash
         run: sleep 120
 
