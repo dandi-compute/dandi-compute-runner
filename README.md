@@ -25,8 +25,8 @@ The repository is kept public to allow anyone to see the runtime logs of the sub
 3. `cd /orcd/data/dandi/001/dandi-compute/dandi-compute-runner`
 4. Follow copy & paste instructions from Settings
 5. Use the default runner group
-6. Give the runners the name `submitter` or `monitor` (correspondingly)
-7. Add the labels `mit`, `engaging`, and `submitter` or `monitor` (correspondingly)
+6. Give the runner the name `submitter`
+7. Add the labels `mit`, `engaging`, and `submitter`
 8. Use the default work directory
 9. On the login node, install the crontab from [`launcher/crontab`](launcher/crontab):
 
@@ -35,6 +35,27 @@ The repository is kept public to allow anyone to see the runtime logs of the sub
    ```
 
    That file is the only copy of the crontab. It replaces the whole user crontab, including the backup jobs it also lists. The "Refresh state" workflow and `launcher/revive.sh` reinstall it the same way, so change the file rather than the live crontab.
+
+## Global logs
+
+Everything that runs on the cluster outside a job capsule is recorded in
+[dandi-compute-global-logs](https://github.com/dandi-compute/dandi-compute-global-logs), checked out at `/orcd/data/dandi/001/dandi-compute/dandi-compute-global-logs`. That covers every step of the self-hosted workflows, the cron trigger for dispatching, and a `squeue` snapshot every 5 minutes. The logs of job capsules themselves stay with each capsule and go to DANDI with it.
+
+[`launcher/record.sh`](launcher/record.sh) does the recording: `record.sh KIND NAME -- COMMAND...` runs the command and records it on that day's branch (`YYYY-MM-DD`), under `logs/{timestamp}-{name}/` or `monitor/{timestamp}-{name}/`.
+
+- Each record is a `datalad run` commit holding the exact command, its directory and its exit status. The command runs inside duct, which saves `stdout`, `stderr`, `info.json` and `usage.jsonl`. DataLad and duct come from `/orcd/data/dandi/001/environments/name-datalad_env`; without them the command is recorded with plain git.
+- The record is made in a throwaway clone and then moved onto the day's branch of the shared checkout, which is locked only for that move and the push.
+- Recording never stops the work: the command always runs, its exit status is passed through, and anything that went wrong is pushed in the record's `record.log`. If the shared checkout is busy or broken, the record is pushed straight to GitHub. If GitHub cannot be reached, it is kept in `untracked/unpushed/` and delivered with the next record.
+- Workflow steps are recorded through each self-hosted job's `defaults.run.shell`, which also keeps the step's script and the run's URL.
+
+To set it up, clone the repository with a token that can push to it (contents: write) in its URL:
+
+```bash
+git clone https://x-access-token:<token>@github.com/dandi-compute/dandi-compute-global-logs /orcd/data/dandi/001/dandi-compute/dandi-compute-global-logs
+chmod 600 /orcd/data/dandi/001/dandi-compute/dandi-compute-global-logs/.git/config
+```
+
+Every push goes through that clone's origin. Credentials in URLs are masked in every `record.log`.
 
 ## SLURM limits
 

@@ -47,6 +47,11 @@ jobs:
     needs: CheckEngaging
     name: Update codebase
     runs-on: [self-hosted, mit, engaging, submitter]
+    # Each step records itself in the global logs repository (see launcher/record.sh); the shell
+    # after `--` is GitHub's own default for bash.
+    defaults:
+      run:
+        shell: /orcd/data/dandi/001/dandi-compute/dandi-compute-runner/launcher/record.sh logs update-codebase -- bash --noprofile --norc -eo pipefail {0}
     env:
       DIRECTORIES: ${{ inputs.directory == 'all' && 'dandi-compute-core dandi-compute-runner aind-ephys-pipeline' || inputs.directory }}
 
