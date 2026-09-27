@@ -7,7 +7,7 @@ on:
         description: "Which cloned directory (under the cluster data root) to pull, or `all` for every one."
         required: true
         type: choice
-        default: dandi-compute-core
+        default: all
         options:
           - all
           - dandi-compute-core
