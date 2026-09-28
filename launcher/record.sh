@@ -145,7 +145,7 @@ keep_step_script() {
 }
 
 commit_message() {
-    local message="[DANDI Compute] $NAME on $(hostname)"
+    local message="[DANDI Compute] $NAME"
     local runner_commit
     runner_commit=$(git -C "$RUNNER_REPOSITORY" rev-parse --short HEAD 2> /dev/null) && message+=" (runner $runner_commit)"
     [ -n "${GITHUB_RUN_ID:-}" ] && message+=" for ${GITHUB_SERVER_URL:-https://github.com}/${GITHUB_REPOSITORY:-}/actions/runs/$GITHUB_RUN_ID"
