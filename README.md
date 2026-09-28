@@ -46,7 +46,7 @@ Everything that runs on the cluster outside a job capsule is recorded in
 - Each record is a `datalad run` commit holding the exact command, its directory and its exit status. The command runs inside duct, which saves `stdout`, `stderr`, `info.json` and `usage.jsonl`. DataLad and duct come from `/orcd/data/dandi/001/environments/name-datalad_env`; without them the command is recorded with plain git.
 - The record is made in a throwaway clone and then moved onto the day's branch of the shared checkout, which is locked only for that move and the push.
 - Recording never stops the work: the command always runs, its exit status is passed through, and anything that went wrong is pushed in the record's `record.log`. If the shared checkout is busy or broken, the record is pushed straight to GitHub. If GitHub cannot be reached, it is kept in `untracked/unpushed/` and delivered with the next record.
-- Workflow steps are recorded through each self-hosted job's `defaults.run.shell`, which also keeps the step's script and the run's URL.
+- Workflow steps are recorded through each self-hosted job's `defaults.run.shell`, which also keeps the step's script and the run's URL. That shell starts in plain bash and hands the step to `record.sh` only when it is on the machine, so a checkout that predates `record.sh` still runs every step (unrecorded) and the Update codebase workflow can bring it in.
 
 To set it up, clone the repository with a token that can push to it (contents: write) in its URL:
 
