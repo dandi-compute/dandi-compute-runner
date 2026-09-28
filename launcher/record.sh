@@ -66,7 +66,9 @@ note() {
 
 # Whether GitHub declined the last push by a repository rule, such as push protection finding a
 # secret, which no retry changes; retrying would only hold the shared checkout's lock longer.
-declined_by_rule() { [ -s "$NOTES" ] && tail -n 40 "$NOTES" | grep -q -e 'GH013' -e 'repository rule violations'; }
+# grep reads to the end rather than stopping at a match (-q), since a writer cut off early prints
+# broken-pipe errors wherever SIGPIPE is ignored, as it is under GitHub's runner.
+declined_by_rule() { [ -s "$NOTES" ] && tail -n 40 "$NOTES" | grep -e 'GH013' -e 'repository rule violations' > /dev/null; }
 
 # The last lines git wrote to record.log, shown with a failure so the reason reaches the job's own
 # log even when the record itself cannot be delivered.
@@ -398,7 +400,7 @@ main() {
     elif ! deliver_through_shared_checkout; then
         commit_pending "[DANDI Compute] $NAME: record.log (delivery)"
         deliver_directly || park
-    elif [ -s "$NOTES" ] && ! cmp -s <(redact < "$NOTES") "$CLONE/$OUTPUT_PATH/record.log"; then
+    elif [ -s "$NOTES" ] && [ "$(redact < "$NOTES")" != "$(cat "$CLONE/$OUTPUT_PATH/record.log" 2> /dev/null)" ]; then
         # Problems met while delivering belong in the record too.
         commit_pending "[DANDI Compute] $NAME: record.log (delivery)"
         deliver_through_shared_checkout || deliver_directly || park
