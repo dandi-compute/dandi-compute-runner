@@ -17,7 +17,7 @@ PYTHON=/orcd/data/dandi/001/environments/name-datalad_env/bin/python
 
 cd "$LOG_REPOSITORY"
 exec 9> .git/dandi-compute-record.lock
-echo "Waiting for the shared checkout..."
+echo "Waiting for the shared checkout, which record.sh locks while it delivers a record..."
 flock 9
 
 git cherry-pick --abort > /dev/null 2>&1 || true
@@ -42,5 +42,12 @@ for branch in $(git for-each-ref --format='%(refname:short)' 'refs/heads/[0-9][0
         -- "$base..$branch" > /dev/null
 done
 git for-each-ref --format='%(refname)' refs/original/ | xargs -r -n 1 git update-ref -d
+
+# Records parked for a later delivery are committed from there as they are, so they are masked too.
+if [ -d untracked/unpushed ]; then
+    echo "Masking the records parked in untracked/unpushed/"
+    find untracked/unpushed -type f -exec sed -i -E -f "$REDACT_SCRIPT" {} +
+    find untracked/unpushed -type f -name info.json -exec "$PYTHON" "$STRIP_DUCT_INFO" {} +
+fi
 git checkout -q "$current"
 echo "Done. The next record pushes these branches."

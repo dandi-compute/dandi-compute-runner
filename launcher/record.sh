@@ -64,6 +64,10 @@ note() {
     [ -n "$WORK_DIRECTORY" ] && echo "$(date '+%F %T') $*" >> "$NOTES"
 }
 
+# Whether GitHub declined the last push by a repository rule, such as push protection finding a
+# secret, which no retry changes; retrying would only hold the shared checkout's lock longer.
+declined_by_rule() { [ -s "$NOTES" ] && tail -n 40 "$NOTES" | grep -q -e 'GH013' -e 'repository rule violations'; }
+
 # The last lines git wrote to record.log, shown with a failure so the reason reaches the job's own
 # log even when the record itself cannot be delivered.
 show_git_error() {
@@ -317,6 +321,7 @@ move_onto_shared_branch() {
     local attempt
     for attempt in 1 2 3; do
         git -C "$LOG_REPOSITORY" push -q origin "$BRANCH" 2>> "$NOTES" && break
+        declined_by_rule && break
         git -C "$LOG_REPOSITORY" pull -q --rebase origin "$BRANCH" 2>> "$NOTES" || true
         sleep $((attempt * 5))
     done
@@ -354,6 +359,7 @@ deliver_directly() {
             git -C "$CLONE" rebase -q FETCH_HEAD 2>> "$NOTES" || { git -C "$CLONE" rebase --abort; note "could not rebase onto GitHub's $BRANCH"; }
         fi
         git -C "$CLONE" push -q "$url" "HEAD:refs/heads/$BRANCH" 2>> "$NOTES" && return 0
+        declined_by_rule && break
         sleep $((attempt * 5))
     done
     show_git_error
