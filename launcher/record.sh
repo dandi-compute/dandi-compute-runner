@@ -277,12 +277,32 @@ move_onto_shared_branch() {
 
     local attempt
     for attempt in 1 2 3; do
-        git -C "$LOG_REPOSITORY" push -q origin "$BRANCH" 2>> "$NOTES" && return 0
+        git -C "$LOG_REPOSITORY" push -q origin "$BRANCH" 2>> "$NOTES" && break
         git -C "$LOG_REPOSITORY" pull -q --rebase origin "$BRANCH" 2>> "$NOTES" || true
         sleep $((attempt * 5))
     done
-    note "could not push $BRANCH from the shared checkout; it stays there for the next push"
+    if ! git -C "$LOG_REPOSITORY" merge-base --is-ancestor "$BRANCH" "refs/remotes/origin/$BRANCH" 2> /dev/null; then
+        note "could not push $BRANCH from the shared checkout; it stays there for the next push"
+    fi
+    clean_up_day_branches
     return 0
+}
+
+# Earlier days' branches in the shared checkout are pushed if GitHub lacks any of their records,
+# then deleted once GitHub has them all; one that cannot be pushed stays for the next delivery.
+# Afterwards, branches deleted on GitHub are dropped from origin/ as well.
+clean_up_day_branches() {
+    local branch
+    git -C "$LOG_REPOSITORY" for-each-ref --format='%(refname:short)' 'refs/heads/[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]' \
+        | while read -r branch; do
+            [ "$branch" = "$BRANCH" ] && continue
+            if ! git -C "$LOG_REPOSITORY" merge-base --is-ancestor "$branch" "refs/remotes/origin/$branch" 2> /dev/null; then
+                git -C "$LOG_REPOSITORY" push -q origin "$branch" 2>> "$NOTES" \
+                    || { note "could not push $branch from the shared checkout; it stays there for the next push"; continue; }
+            fi
+            git -C "$LOG_REPOSITORY" branch -q -D "$branch" 2>> "$NOTES"
+        done
+    git -C "$LOG_REPOSITORY" remote prune origin > /dev/null 2>> "$NOTES"
 }
 
 # Push the clone's commits straight to the day's branch on GitHub.
