@@ -4,13 +4,16 @@
 # logs repository has not pushed yet, so GitHub's push protection lets them through.
 #
 # Records made before record.sh masked them could hold a token that duct sampled from a command
-# line. Only commits GitHub does not have are rewritten, their files and messages alike, with
+# line, and duct's info.json the host, user, OS and SLURM variables it now leaves out. Only commits GitHub does not have are rewritten, their files and messages alike, with
 # launcher/redact.sed and under the lock record.sh delivers under. The next record pushes them.
 
 set -euo pipefail
 
 LOG_REPOSITORY=/orcd/data/dandi/001/dandi-compute/dandi-compute-global-logs
 REDACT_SCRIPT="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/redact.sed"
+STRIP_DUCT_INFO="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/strip_duct_info.py"
+PYTHON=/orcd/data/dandi/001/environments/name-datalad_env/bin/python
+[ -x "$PYTHON" ] || PYTHON=$(command -v python3)
 
 cd "$LOG_REPOSITORY"
 exec 9> .git/dandi-compute-record.lock
@@ -33,7 +36,8 @@ for branch in $(git for-each-ref --format='%(refname:short)' 'refs/heads/[0-9][0
     echo "$branch: $count commit(s) not on GitHub"
     [ "$count" -gt 0 ] || continue
     FILTER_BRANCH_SQUELCH_WARNING=1 git filter-branch -f --tree-filter \
-        "find logs monitor recovered -type f -exec sed -i -E -f '$REDACT_SCRIPT' {} + 2> /dev/null || true" \
+        "find logs monitor recovered -type f -exec sed -i -E -f '$REDACT_SCRIPT' {} + 2> /dev/null || true
+         find logs monitor recovered -type f -name info.json -exec '$PYTHON' '$STRIP_DUCT_INFO' {} + 2> /dev/null || true" \
         --msg-filter "sed -E -f '$REDACT_SCRIPT'" \
         -- "$base..$branch" > /dev/null
 done

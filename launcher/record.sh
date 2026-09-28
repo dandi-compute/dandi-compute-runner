@@ -89,7 +89,17 @@ else
     REDACT=(-E -e 's#(://)[^/@[:space:]]+@#\1***@#g')
 fi
 redact() { sed "${REDACT[@]}"; }
-scrub_record() { find "$CLONE/$OUTPUT_PATH" -type f -exec sed -i "${REDACT[@]}" {} + 2>> "$NOTES"; }
+# duct's info.json also loses the host, user, OS and SLURM variables it records, through
+# launcher/strip_duct_info.py and the Python of the environment duct came from.
+STRIP_DUCT_INFO="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/strip_duct_info.py"
+scrub_record() {
+    find "$CLONE/$OUTPUT_PATH" -type f -exec sed -i "${REDACT[@]}" {} + 2>> "$NOTES"
+    local info="$CLONE/$OUTPUT_PATH/.duct/info.json" python
+    [ -f "$info" ] || return 0
+    python="$(dirname "${DUCT[0]:-}")/python"
+    [ -x "$python" ] || python=$(command -v python3) || { note "no Python to strip system and env from duct's info.json"; return 0; }
+    "$python" "$STRIP_DUCT_INFO" "$info" 2>> "$NOTES" || note "could not strip system and env from duct's info.json"
+}
 
 # --- run the command ------------------------------------------------------------------------
 
