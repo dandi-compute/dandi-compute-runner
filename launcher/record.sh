@@ -9,8 +9,9 @@
 #
 # The record lands in KIND/{YYYYMMDDTHHMMSS}-NAME/ on the day's branch (YYYY-MM-DD) of the
 # global logs repository, a DataLad dataset checked out at $LOG_REPOSITORY, and is pushed to
-# GitHub. A monitor record also writes its directory's name to monitor/LATEST, so the newest
-# snapshot can be looked up without listing monitor/. The command runs under `datalad run`,
+# GitHub. A monitor record goes in monitor/{HH}/{YYYYMMDDTHHMMSS}-NAME/ instead, and writes that
+# path, relative to monitor/, to monitor/LATEST, so the newest snapshot can be looked up without
+# listing monitor/. The command runs under `datalad run`,
 # inside duct when it is available, in a throwaway clone, so the shared checkout is locked only
 # while the finished record is moved onto its branch. The command runs in the directory record.sh
 # was called from, and record.sh exits with its exit status.
@@ -51,7 +52,15 @@ shift 3
 ORIGINAL_DIRECTORY="$PWD"
 DATE=$(date +%F)
 BRANCH="$DATE"
-OUTPUT_PATH="$KIND/$(date +%Y%m%dT%H%M%S)-$NAME"
+TIMESTAMP=$(date +%Y%m%dT%H%M%S)
+# Monitor snapshots, one every 5 minutes, are grouped by hour (monitor/HH/...) so that no directory
+# grows too long to browse. LATEST holds the newest one's path relative to monitor/.
+if [ "$KIND" = monitor ]; then
+    RECORD_NAME="${TIMESTAMP:9:2}/$TIMESTAMP-$NAME"
+else
+    RECORD_NAME="$TIMESTAMP-$NAME"
+fi
+OUTPUT_PATH="$KIND/$RECORD_NAME"
 # What the record commits: its directory, and for a monitor snapshot monitor/LATEST naming it.
 RECORD_PATHS=("$OUTPUT_PATH")
 [ "$KIND" = monitor ] && RECORD_PATHS+=("$KIND/LATEST")
@@ -401,7 +410,7 @@ main() {
     fi
     CLONE_START=$(git -C "$CLONE" rev-parse -q --verify HEAD || true)
     mkdir -p "$CLONE/$OUTPUT_PATH"
-    [ "$KIND" = monitor ] && basename "$OUTPUT_PATH" > "$CLONE/$KIND/LATEST"
+    [ "$KIND" = monitor ] && echo "$RECORD_NAME" > "$CLONE/$KIND/LATEST"
     keep_step_script "$@"
 
     run_with_datalad "$@" || run_without_datalad "$@"
