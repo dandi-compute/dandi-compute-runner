@@ -55,7 +55,7 @@ git clone https://x-access-token:<token>@github.com/dandi-compute/dandi-compute-
 chmod 600 /orcd/data/dandi/001/dandi-compute/dandi-compute-global-logs/.git/config
 ```
 
-Every push goes through that clone's origin. Credentials in URLs are masked in every `record.log`.
+Every push goes through that clone's origin. Since duct samples the command line of every process a step starts, every file and message of a record passes through [`launcher/redact.sed`](launcher/redact.sed) before it is committed, which masks GitHub tokens, `Authorization` headers and credentials in URLs. Records made before that masking can hold a token, which GitHub's push protection rejects; [`launcher/scrub_global_logs.sh`](launcher/scrub_global_logs.sh) masks every record the shared checkout has not pushed yet, and the next record pushes them.
 
 ## SLURM limits
 

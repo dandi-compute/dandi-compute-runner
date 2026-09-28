@@ -80,8 +80,16 @@ github_url() {
     git -C "$LOG_REPOSITORY" remote get-url origin 2> /dev/null || echo "$LOG_REPOSITORY_URL"
 }
 
-# Credentials in URLs never go into a record.
-redact() { sed -E 's#(://)[^/@[:space:]]+@#\1***@#g'; }
+# Credentials never go into a record: every file of a record passes through launcher/redact.sed
+# before it is committed. Without that file, credentials in URLs are still masked.
+REDACT_SCRIPT="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/redact.sed"
+if [ -f "$REDACT_SCRIPT" ]; then
+    REDACT=(-E -f "$REDACT_SCRIPT")
+else
+    REDACT=(-E -e 's#(://)[^/@[:space:]]+@#\1***@#g')
+fi
+redact() { sed "${REDACT[@]}"; }
+scrub_record() { find "$CLONE/$OUTPUT_PATH" -type f -exec sed -i "${REDACT[@]}" {} + 2>> "$NOTES"; }
 
 # --- run the command ------------------------------------------------------------------------
 
@@ -183,6 +191,18 @@ run_with_datalad() {
     # The command's own output passes through to wherever record.sh's goes, as well as into the record.
     (cd "$CLONE" && "$datalad" -l warning -f disabled run --explicit -m "$(commit_message)" --output "$OUTPUT_PATH" -- "${run[@]}")
     local datalad_status=$?
+    # datalad run has committed the record as it was written; what the scrub masks, in the files
+    # and in the run record of the message, is amended in.
+    scrub_record
+    if [ "$(git -C "$CLONE" rev-parse -q --verify HEAD)" != "$start" ]; then
+        local message masked
+        message=$(git -C "$CLONE" log -1 --format=%B)
+        masked=$(redact <<< "$message")
+        if [ -n "$(git -C "$CLONE" status --porcelain -- "$OUTPUT_PATH")" ] || [ "$message" != "$masked" ]; then
+            git -C "$CLONE" add -A -- "$OUTPUT_PATH" && git -C "$CLONE" commit -q --amend -m "$masked" 2>> "$NOTES" \
+                || note "could not amend the masked record into the run record"
+        fi
+    fi
 
     if [ ! -f "$CLONE/$OUTPUT_PATH/exit_status" ]; then
         note "datalad run exited $datalad_status before the command started"
@@ -197,6 +217,7 @@ run_with_datalad() {
     if [ "$(git -C "$CLONE" rev-parse -q --verify HEAD)" = "$start" ]; then
         # A failing command leaves its run record in .git/COMMIT_EDITMSG for saving by hand.
         if [ -f "$CLONE/.git/COMMIT_EDITMSG" ]; then
+            sed -i "${REDACT[@]}" "$CLONE/.git/COMMIT_EDITMSG"
             (cd "$CLONE" && "$datalad" -l warning -f disabled save -F .git/COMMIT_EDITMSG -- "$OUTPUT_PATH") 2>> "$NOTES" \
                 || note "could not save the run record of the failed command"
         fi
@@ -214,6 +235,7 @@ run_without_datalad() {
 
 commit_pending() {
     local message="$1"
+    scrub_record
     [ -s "$NOTES" ] && redact < "$NOTES" > "$CLONE/$OUTPUT_PATH/record.log"
     git -C "$CLONE" add -A -- "$OUTPUT_PATH" 2>> "$NOTES"
     git -C "$CLONE" diff --cached --quiet || git -C "$CLONE" commit -q -m "$message" 2>> "$NOTES"

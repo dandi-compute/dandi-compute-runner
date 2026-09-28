@@ -88,6 +88,8 @@ log "Pending work found; dispatching workflow"
 # Bounded, retried, and always reports its HTTP status. A successful
 # workflow_dispatch returns 204; anything else dumps the response body so the
 # reason (401/403 token, 404/422 disabled/renamed workflow, ...) is logged.
+# The token goes in through a header file rather than the command line, which
+# anyone on the node can read, and which duct records (see launcher/record.sh).
 response_body="$(mktemp)"
 trap 'rm -f "$response_body"' EXIT
 
@@ -95,7 +97,7 @@ http_code=$(
   curl -sS --max-time 30 --retry 3 --retry-connrefused \
     -o "$response_body" -w '%{http_code}' \
     -X POST \
-    -H "Authorization: Bearer $GH_TOKEN" \
+    -H @<(printf 'Authorization: Bearer %s\n' "$GH_TOKEN") \
     -H "Accept: application/vnd.github+json" \
     -H "X-GitHub-Api-Version: 2022-11-28" \
     https://api.github.com/repos/dandi-compute/dandi-compute-runner/actions/workflows/process-queue.yml/dispatches \
