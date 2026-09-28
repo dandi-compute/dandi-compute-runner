@@ -23,7 +23,7 @@ The repository is kept public to allow anyone to see the runtime logs of the sub
 Every operation on the cluster records itself in the global logs repository,
 [dandi-compute-global-logs](https://github.com/dandi-compute/dandi-compute-global-logs), checked out at `/orcd/data/dandi/001/dandi-compute/dandi-compute-global-logs`. That covers the scheduled tasks, every step of the workflows below, and a `squeue` snapshot every 5 minutes. The logs of job capsules themselves stay with each capsule and go to DANDI with it.
 
-Records land on a branch per day (`YYYY-MM-DD`), under `logs/` for operations and `monitor/` for the snapshots, so old days can be dropped as branches. Each record is a `datalad run` commit, which holds the exact command, where it ran and its exit status. It is made inside [duct](https://github.com/con/duct), which adds timing and resource usage beside the command's output.
+Records land on a branch per day (`YYYY-MM-DD`), under `logs/` for operations and `monitor/` for the snapshots, so old days can be dropped as branches. Each record is a `datalad run` commit, which holds the exact command, where it ran and its exit status. The command's `stdout` and `stderr` are saved beside it, and it runs inside [duct](https://github.com/con/duct), which saves its `info.json` and `usage.jsonl` under `.duct/`. DataLad and duct come from `/orcd/data/dandi/001/environments/name-datalad_env`, which the Update codebase workflow creates when it is missing, or else from the LFP capsules' `name-lfp_environment`.
 
 [`launcher/record.sh`](launcher/record.sh) does the recording:
 
@@ -38,6 +38,8 @@ It never stops the work and never drops a record. Whatever goes wrong while reco
 - **GitHub unreachable:** the record is kept under `untracked/unpushed/` in the checkout, and the next record that gets through commits it under `recovered/`.
 
 The raw output of each SLURM job and of the runner also goes to `untracked/` in the checkout, in case recording itself fails.
+
+Since duct samples the command line of every process a step starts, every file and message of a record passes through [`launcher/redact.sed`](launcher/redact.sed) before it is committed, which masks GitHub tokens, `Authorization` headers, credentials in URLs and DANDI API keys, including the one `record.sh` itself runs with wherever it appears. duct's `info.json` also leaves out the `system` and `env` duct records (host, user, OS, SLURM variables), through [`launcher/strip_duct_info.py`](launcher/strip_duct_info.py). Records made before that masking can hold a token, which GitHub's push protection rejects; [`launcher/scrub_global_logs.sh`](launcher/scrub_global_logs.sh) masks every record the shared checkout has not pushed yet, rewriting only the file versions that need it without checking anything out, and the next record pushes them.
 
 ## Scheduled tasks
 
@@ -67,14 +69,14 @@ The login node also runs, every 5 minutes, [`launcher/monitor.sh`](launcher/moni
    export DANDICOMPUTE_OOP_FAILSAFE_LOG=...  # if used
    ```
 
-2. Clone the global logs repository where the scripts expect it. Recording uses DataLad and duct from `/orcd/data/dandi/001/environments/name-datalad_env`, and records plainly without them:
+2. Clone the global logs repository where the scripts expect it. Recording uses DataLad and duct as described under [Global logs](#global-logs), and records plainly without them:
 
    ```bash
    git clone https://x-access-token:<token>@github.com/dandi-compute/dandi-compute-global-logs /orcd/data/dandi/001/dandi-compute/dandi-compute-global-logs
    chmod 600 /orcd/data/dandi/001/dandi-compute/dandi-compute-global-logs/.git/config
    ```
 
-   The token needs contents: write on dandi-compute-global-logs. Records are pushed with the clone's origin, and so is a record pushed straight to GitHub when the checkout is busy. Credentials in URLs are masked in every `record.log`.
+   The token needs contents: write on dandi-compute-global-logs. Records are pushed with the clone's origin, and so is a record pushed straight to GitHub when the checkout is busy. Every record is masked through `launcher/redact.sed` before it is committed.
 
 3. On the login node, install the crontab from [`launcher/crontab`](launcher/crontab):
 
