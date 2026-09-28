@@ -94,6 +94,10 @@ if [ -f "$REDACT_SCRIPT" ]; then
 else
     REDACT=(-E -e 's#(://)[^/@[:space:]]+@#\1***@#g')
 fi
+# The DANDI API key the steps run with is masked wherever it appears, not only where it is assigned.
+if [[ "${DANDI_API_KEY:-}" =~ ^[A-Za-z0-9]{16,}$ ]]; then
+    REDACT+=(-e "s#${DANDI_API_KEY}#***#g")
+fi
 redact() { sed "${REDACT[@]}"; }
 # duct's info.json also loses the host, user, OS and SLURM variables it records, through
 # launcher/strip_duct_info.py and the Python of the environment duct came from.
