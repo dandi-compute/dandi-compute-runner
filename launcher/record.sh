@@ -7,8 +7,8 @@
 #   KIND     `logs` for tasks and workflow steps, `monitor` for monitor snapshots
 #   NAME     a short name for the operation, used in the record's directory name
 #
-# The record lands in KIND/{YYYYMMDDTHHMMSS}-NAME/ on the day's branch (YYYY-MM-DD) of the
-# global logs repository, a DataLad dataset checked out at $LOG_REPOSITORY, and is pushed to
+# The record lands in KIND/{YYYYMMDDTHHMMSS}-NAME/ on the day's branch for its kind
+# (KIND/YYYY-MM-DD) of the global logs repository, a DataLad dataset checked out at $LOG_REPOSITORY, and is pushed to
 # GitHub. A monitor record goes in monitor/{HH}/{YYYYMMDDTHHMMSS}-NAME/ instead, and writes that
 # path, relative to monitor/, to monitor/LATEST, so the newest snapshot can be looked up without
 # listing monitor/. The command runs under `datalad run`,
@@ -51,7 +51,9 @@ shift 3
 
 ORIGINAL_DIRECTORY="$PWD"
 DATE=$(date +%F)
-BRANCH="$DATE"
+# Each kind has its own branch per day, so the frequent monitor snapshots and the tasks and
+# workflow steps never rebase onto or race each other's pushes.
+BRANCH="$KIND/$DATE"
 TIMESTAMP=$(date +%Y%m%dT%H%M%S)
 # Monitor snapshots, one every 5 minutes, are grouped by hour (monitor/HH/...) so that no directory
 # grows too long to browse. LATEST holds the newest one's path relative to monitor/.
@@ -356,14 +358,19 @@ move_onto_shared_branch() {
     return 0
 }
 
-# Earlier days' branches in the shared checkout are pushed if GitHub lacks any of their records,
+# Earlier days' branches in the shared checkout, of every kind and the undivided YYYY-MM-DD
+# branches from before the kinds were split, are pushed if GitHub lacks any of their records,
 # then deleted once GitHub has them all; one that cannot be pushed stays for the next delivery.
 # Afterwards, branches deleted on GitHub are dropped from origin/ as well.
+DAY_BRANCH_PATTERNS=(
+    'refs/heads/[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'
+    'refs/heads/*/[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'
+)
 clean_up_day_branches() {
     local branch
-    git -C "$LOG_REPOSITORY" for-each-ref --format='%(refname:short)' 'refs/heads/[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]' \
+    git -C "$LOG_REPOSITORY" for-each-ref --format='%(refname:short)' "${DAY_BRANCH_PATTERNS[@]}" \
         | while read -r branch; do
-            [ "$branch" = "$BRANCH" ] && continue
+            [[ "$branch" == *"$DATE" ]] && continue
             if ! git -C "$LOG_REPOSITORY" merge-base --is-ancestor "$branch" "refs/remotes/origin/$branch" 2> /dev/null; then
                 git -C "$LOG_REPOSITORY" push -q origin "$branch" 2>> "$NOTES" \
                     || { show_git_error; note "could not push $branch from the shared checkout; it stays there for the next push"; continue; }

@@ -51,7 +51,9 @@ map_masked_blobs() {
         done | sort -u > "$WORK/map"
 }
 
-for branch in $(git for-each-ref --format='%(refname:short)' 'refs/heads/[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'); do
+# The day's branches of every kind (KIND/YYYY-MM-DD), and the undivided YYYY-MM-DD ones from before.
+for branch in $(git for-each-ref --format='%(refname:short)' 'refs/heads/[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]' \
+    'refs/heads/*/[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'); do
     if git rev-parse --verify -q "refs/remotes/origin/$branch" > /dev/null; then
         base="origin/$branch"
     else
