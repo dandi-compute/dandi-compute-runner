@@ -30,7 +30,12 @@ set -u
 
 LOG_REPOSITORY=/orcd/data/dandi/001/dandi-compute/dandi-compute-global-logs
 LOG_REPOSITORY_URL=https://github.com/dandi-compute/dandi-compute-global-logs.git
-DATALAD_ENVIRONMENT=/orcd/data/dandi/001/environments/name-datalad_env
+# Where DataLad and duct are looked for, in order. The first is provisioned for recording by the
+# Update codebase workflow; the LFP capsules' environment carries both as well.
+DATALAD_ENVIRONMENTS=(
+    /orcd/data/dandi/001/environments/name-datalad_env
+    /orcd/data/dandi/001/environments/name-lfp_environment
+)
 RUNNER_REPOSITORY=/orcd/data/dandi/001/dandi-compute/dandi-compute-runner
 LOCK_TIMEOUT_SECONDS=900
 
@@ -125,18 +130,43 @@ commit_message() {
     echo "$message"
 }
 
+# The first of DATALAD_ENVIRONMENTS holding DataLad, then duct, and the command that runs duct:
+# `con-duct run` since con-duct 0.17, `duct` itself before. The newer `duct` execs con-duct from
+# PATH, which need not be the same one, so con-duct is called directly when it can run.
+find_datalad() {
+    local environment
+    for environment in "${DATALAD_ENVIRONMENTS[@]}"; do
+        [ -x "$environment/bin/datalad" ] && { echo "$environment/bin/datalad"; return 0; }
+    done
+    return 1
+}
+
+DUCT=()
+find_duct() {
+    local environment
+    for environment in "${DATALAD_ENVIRONMENTS[@]}"; do
+        if [ -x "$environment/bin/con-duct" ] && "$environment/bin/con-duct" run --help > /dev/null 2>&1; then
+            DUCT=("$environment/bin/con-duct" run)
+            return 0
+        elif [ -x "$environment/bin/duct" ]; then
+            DUCT=("$environment/bin/duct")
+            return 0
+        fi
+    done
+    return 1
+}
+
 COMMAND_STATUS=""
 run_with_datalad() {
-    local datalad="$DATALAD_ENVIRONMENT/bin/datalad"
-    [ -x "$datalad" ] || { note "DataLad not found at $datalad"; return 1; }
+    local datalad
+    datalad=$(find_datalad) || { note "DataLad not found in any of ${DATALAD_ENVIRONMENTS[*]}"; return 1; }
     local run=()
-    if [ -x "$DATALAD_ENVIRONMENT/bin/con-duct" ]; then
-        # con-duct directly: `duct` itself execs con-duct from PATH, which need not be this one.
+    if find_duct; then
         # --fail-time 0 keeps the logs of a command that fails quickly, which duct would delete.
-        run=("$DATALAD_ENVIRONMENT/bin/con-duct" run -q --fail-time 0 -p "$OUTPUT_PATH/")
+        run=("${DUCT[@]}" -l NONE --fail-time 0 -p "$OUTPUT_PATH/")
         mapfile -d '' -t inner < <(inner_command no "$@")
     else
-        note "duct not found in $DATALAD_ENVIRONMENT; recording without resource usage"
+        note "duct not found in any of ${DATALAD_ENVIRONMENTS[*]}; recording without resource usage"
         mapfile -d '' -t inner < <(inner_command yes "$@")
     fi
     run+=("${inner[@]}")
@@ -206,38 +236,46 @@ deliver_through_shared_checkout() {
 }
 
 move_onto_shared_branch() {
+    # Every step that must succeed exits the subshell explicitly: `set -e` would not help, since
+    # it is switched off inside a function called from a condition, as this one is.
     (
-        set -e
-        cd "$LOG_REPOSITORY"
-        git cherry-pick --abort > /dev/null 2>&1 || true
-        git rebase --abort > /dev/null 2>&1 || true
-        git reset -q --hard
+        cd "$LOG_REPOSITORY" || exit 1
+        git cherry-pick --abort > /dev/null 2>&1
+        git rebase --abort > /dev/null 2>&1
+        git reset -q --hard || exit 1
         git fetch -q origin 2>> "$NOTES" || echo "$(date '+%F %T') could not fetch from GitHub" >> "$NOTES"
         if git rev-parse --verify -q "refs/heads/$BRANCH" > /dev/null; then
             git checkout -q "$BRANCH"
         elif git rev-parse --verify -q "refs/remotes/origin/$BRANCH" > /dev/null; then
             git checkout -q -b "$BRANCH" "origin/$BRANCH"
+        elif git rev-parse --verify -q refs/remotes/origin/main > /dev/null; then
+            git checkout -q -b "$BRANCH" origin/main
         else
             git checkout -q -b "$BRANCH" main
+        fi || exit 1
+        # A new day's throwaway clones start from main, so it follows GitHub's.
+        if git rev-parse --verify -q refs/remotes/origin/main > /dev/null; then
+            git update-ref refs/heads/main refs/remotes/origin/main
         fi
         if git rev-parse --verify -q "refs/remotes/origin/$BRANCH" > /dev/null; then
-            git rebase -q "origin/$BRANCH" 2>> "$NOTES"
+            git rebase -q "origin/$BRANCH" 2>> "$NOTES" || exit 1
         fi
-        git fetch -q "$CLONE" HEAD
-        git cherry-pick --allow-empty --keep-redundant-commits "${DELIVERED:-$CLONE_START}..FETCH_HEAD" > /dev/null 2>> "$NOTES"
+        git fetch -q "$CLONE" HEAD || exit 1
+        git cherry-pick --allow-empty --keep-redundant-commits "${DELIVERED:-$CLONE_START}..FETCH_HEAD" > /dev/null 2>> "$NOTES" || exit 1
         if [ -n "$(ls -A untracked/unpushed 2> /dev/null)" ]; then
-            mkdir -p recovered
-            cp -r untracked/unpushed/. recovered/
-            rm -rf untracked/unpushed
-            git add -A recovered
-            git commit -q -m "[DANDI Compute] recovered records that could not be delivered earlier"
+            # Parked records are removed only once they are committed under recovered/.
+            mkdir -p recovered && cp -r untracked/unpushed/. recovered/ && git add -A recovered \
+                && git commit -q -m "[DANDI Compute] recovered records that could not be delivered earlier" \
+                && rm -rf untracked/unpushed \
+                || echo "$(date '+%F %T') could not commit the parked records; they stay parked" >> "$NOTES"
         fi
-    ) 9>&- || {
+    ) 9>&-
+    if [ "$?" -ne 0 ]; then
         note "could not move the record onto $BRANCH in the shared checkout"
         git -C "$LOG_REPOSITORY" cherry-pick --abort > /dev/null 2>&1
         git -C "$LOG_REPOSITORY" rebase --abort > /dev/null 2>&1
         return 1
-    }
+    fi
 
     local attempt
     for attempt in 1 2 3; do
