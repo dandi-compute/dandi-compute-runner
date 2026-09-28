@@ -30,7 +30,12 @@ set -u
 
 LOG_REPOSITORY=/orcd/data/dandi/001/dandi-compute/dandi-compute-global-logs
 LOG_REPOSITORY_URL=https://github.com/dandi-compute/dandi-compute-global-logs.git
-DATALAD_ENVIRONMENT=/orcd/data/dandi/001/environments/name-datalad_env
+# Where DataLad and duct are looked for, in order. The first is provisioned for recording by the
+# Update codebase workflow; the LFP capsules' environment carries both as well.
+DATALAD_ENVIRONMENTS=(
+    /orcd/data/dandi/001/environments/name-datalad_env
+    /orcd/data/dandi/001/environments/name-lfp_environment
+)
 RUNNER_REPOSITORY=/orcd/data/dandi/001/dandi-compute/dandi-compute-runner
 LOCK_TIMEOUT_SECONDS=900
 
@@ -59,6 +64,18 @@ note() {
     [ -n "$WORK_DIRECTORY" ] && echo "$(date '+%F %T') $*" >> "$NOTES"
 }
 
+# Whether GitHub declined the last push by a repository rule, such as push protection finding a
+# secret, which no retry changes; retrying would only hold the shared checkout's lock longer.
+# grep reads to the end rather than stopping at a match (-q), since a writer cut off early prints
+# broken-pipe errors wherever SIGPIPE is ignored, as it is under GitHub's runner.
+declined_by_rule() { [ -s "$NOTES" ] && tail -n 40 "$NOTES" | grep -e 'GH013' -e 'repository rule violations' > /dev/null; }
+
+# The last lines git wrote to record.log, shown with a failure so the reason reaches the job's own
+# log even when the record itself cannot be delivered.
+show_git_error() {
+    [ -s "$NOTES" ] && tail -n 6 "$NOTES" | redact | sed 's/^/[record.sh]   /' >&2
+}
+
 # Commits need an identity even where git has none configured.
 git config user.email > /dev/null 2>&1 || export GIT_AUTHOR_NAME="DANDI Compute" GIT_AUTHOR_EMAIL="dandi-compute@users.noreply.github.com" \
     GIT_COMMITTER_NAME="DANDI Compute" GIT_COMMITTER_EMAIL="dandi-compute@users.noreply.github.com"
@@ -69,8 +86,26 @@ github_url() {
     git -C "$LOG_REPOSITORY" remote get-url origin 2> /dev/null || echo "$LOG_REPOSITORY_URL"
 }
 
-# Credentials in URLs never go into a record.
-redact() { sed -E 's#(://)[^/@[:space:]]+@#\1***@#g'; }
+# Credentials never go into a record: every file of a record passes through launcher/redact.sed
+# before it is committed. Without that file, credentials in URLs are still masked.
+REDACT_SCRIPT="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/redact.sed"
+if [ -f "$REDACT_SCRIPT" ]; then
+    REDACT=(-E -f "$REDACT_SCRIPT")
+else
+    REDACT=(-E -e 's#(://)[^/@[:space:]]+@#\1***@#g')
+fi
+redact() { sed "${REDACT[@]}"; }
+# duct's info.json also loses the host, user, OS and SLURM variables it records, through
+# launcher/strip_duct_info.py and the Python of the environment duct came from.
+STRIP_DUCT_INFO="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/strip_duct_info.py"
+scrub_record() {
+    find "$CLONE/$OUTPUT_PATH" -type f -exec sed -i "${REDACT[@]}" {} + 2>> "$NOTES"
+    local info="$CLONE/$OUTPUT_PATH/.duct/info.json" python
+    [ -f "$info" ] || return 0
+    python="$(dirname "${DUCT[0]:-}")/python"
+    [ -x "$python" ] || python=$(command -v python3) || { note "no Python to strip system and env from duct's info.json"; return 0; }
+    "$python" "$STRIP_DUCT_INFO" "$info" 2>> "$NOTES" || note "could not strip system and env from duct's info.json"
+}
 
 # --- run the command ------------------------------------------------------------------------
 
@@ -95,16 +130,14 @@ prepare_clone() {
 }
 
 # The command itself, as recorded: from the clone's root it moves to the directory record.sh
-# was called from, runs, and leaves its exit status beside its output. Without duct it also
-# captures its own output, which it still echoes.
+# was called from, runs, and leaves its output and exit status in the record, still echoing
+# its output.
 inner_command() {
-    local capture="$1"
-    shift
-    local script='output="$PWD/$0"; directory="$1"; capture="$2"; shift 2; echo started > "$output/exit_status"
+    local script='output="$PWD/$0"; directory="$1"; shift; echo started > "$output/exit_status"
 cd "$directory" || { echo 111 > "$output/exit_status"; exit 111; }
-if [ "$capture" = yes ]; then "$@" > >(tee "$output/stdout") 2> >(tee "$output/stderr" >&2); else "$@"; fi
+"$@" > >(tee "$output/stdout") 2> >(tee "$output/stderr" >&2)
 status=$?; echo "$status" > "$output/exit_status"; exit "$status"'
-    printf '%s\0' bash -c "$script" "$OUTPUT_PATH" "$ORIGINAL_DIRECTORY" "$capture" "$@"
+    printf '%s\0' bash -c "$script" "$OUTPUT_PATH" "$ORIGINAL_DIRECTORY" "$@"
 }
 
 # The day's copy of GitHub's script file for a workflow step, which GitHub deletes afterwards.
@@ -118,27 +151,52 @@ keep_step_script() {
 }
 
 commit_message() {
-    local message="[DANDI Compute] $NAME on $(hostname)"
+    local message="[DANDI Compute] $NAME"
     local runner_commit
     runner_commit=$(git -C "$RUNNER_REPOSITORY" rev-parse --short HEAD 2> /dev/null) && message+=" (runner $runner_commit)"
     [ -n "${GITHUB_RUN_ID:-}" ] && message+=" for ${GITHUB_SERVER_URL:-https://github.com}/${GITHUB_REPOSITORY:-}/actions/runs/$GITHUB_RUN_ID"
     echo "$message"
 }
 
+# The first of DATALAD_ENVIRONMENTS holding DataLad, then duct, and the command that runs duct:
+# `con-duct run` since con-duct 0.17, `duct` itself before. The newer `duct` execs con-duct from
+# PATH, which need not be the same one, so con-duct is called directly when it can run.
+find_datalad() {
+    local environment
+    for environment in "${DATALAD_ENVIRONMENTS[@]}"; do
+        [ -x "$environment/bin/datalad" ] && { echo "$environment/bin/datalad"; return 0; }
+    done
+    return 1
+}
+
+DUCT=()
+find_duct() {
+    local environment
+    for environment in "${DATALAD_ENVIRONMENTS[@]}"; do
+        if [ -x "$environment/bin/con-duct" ] && "$environment/bin/con-duct" run --help > /dev/null 2>&1; then
+            DUCT=("$environment/bin/con-duct" run)
+            return 0
+        elif [ -x "$environment/bin/duct" ]; then
+            DUCT=("$environment/bin/duct")
+            return 0
+        fi
+    done
+    return 1
+}
+
 COMMAND_STATUS=""
 run_with_datalad() {
-    local datalad="$DATALAD_ENVIRONMENT/bin/datalad"
-    [ -x "$datalad" ] || { note "DataLad not found at $datalad"; return 1; }
+    local datalad
+    datalad=$(find_datalad) || { note "DataLad not found in any of ${DATALAD_ENVIRONMENTS[*]}"; return 1; }
     local run=()
-    if [ -x "$DATALAD_ENVIRONMENT/bin/con-duct" ]; then
-        # con-duct directly: `duct` itself execs con-duct from PATH, which need not be this one.
+    if find_duct; then
+        # duct's own files go under .duct/; the output is captured beside them by the command.
         # --fail-time 0 keeps the logs of a command that fails quickly, which duct would delete.
-        run=("$DATALAD_ENVIRONMENT/bin/con-duct" run -q --fail-time 0 -p "$OUTPUT_PATH/")
-        mapfile -d '' -t inner < <(inner_command no "$@")
+        run=("${DUCT[@]}" -l NONE --fail-time 0 -c none -p "$OUTPUT_PATH/.duct/")
     else
-        note "duct not found in $DATALAD_ENVIRONMENT; recording without resource usage"
-        mapfile -d '' -t inner < <(inner_command yes "$@")
+        note "duct not found in any of ${DATALAD_ENVIRONMENTS[*]}; recording without resource usage"
     fi
+    mapfile -d '' -t inner < <(inner_command "$@")
     run+=("${inner[@]}")
     # datalad run fills {placeholders} in the command, so literal braces are doubled.
     run=("${run[@]//\{/\{\{}")
@@ -149,6 +207,18 @@ run_with_datalad() {
     # The command's own output passes through to wherever record.sh's goes, as well as into the record.
     (cd "$CLONE" && "$datalad" -l warning -f disabled run --explicit -m "$(commit_message)" --output "$OUTPUT_PATH" -- "${run[@]}")
     local datalad_status=$?
+    # datalad run has committed the record as it was written; what the scrub masks, in the files
+    # and in the run record of the message, is amended in.
+    scrub_record
+    if [ "$(git -C "$CLONE" rev-parse -q --verify HEAD)" != "$start" ]; then
+        local message masked
+        message=$(git -C "$CLONE" log -1 --format=%B)
+        masked=$(redact <<< "$message")
+        if [ -n "$(git -C "$CLONE" status --porcelain -- "$OUTPUT_PATH")" ] || [ "$message" != "$masked" ]; then
+            git -C "$CLONE" add -A -- "$OUTPUT_PATH" && git -C "$CLONE" commit -q --amend -m "$masked" 2>> "$NOTES" \
+                || note "could not amend the masked record into the run record"
+        fi
+    fi
 
     if [ ! -f "$CLONE/$OUTPUT_PATH/exit_status" ]; then
         note "datalad run exited $datalad_status before the command started"
@@ -163,6 +233,7 @@ run_with_datalad() {
     if [ "$(git -C "$CLONE" rev-parse -q --verify HEAD)" = "$start" ]; then
         # A failing command leaves its run record in .git/COMMIT_EDITMSG for saving by hand.
         if [ -f "$CLONE/.git/COMMIT_EDITMSG" ]; then
+            sed -i "${REDACT[@]}" "$CLONE/.git/COMMIT_EDITMSG"
             (cd "$CLONE" && "$datalad" -l warning -f disabled save -F .git/COMMIT_EDITMSG -- "$OUTPUT_PATH") 2>> "$NOTES" \
                 || note "could not save the run record of the failed command"
         fi
@@ -172,7 +243,7 @@ run_with_datalad() {
 
 run_without_datalad() {
     note "running the command without DataLad"
-    mapfile -d '' -t inner < <(inner_command yes "$@")
+    mapfile -d '' -t inner < <(inner_command "$@")
     (cd "$CLONE" && "${inner[@]}")
     COMMAND_STATUS=$(cat "$CLONE/$OUTPUT_PATH/exit_status" 2> /dev/null || echo 1)
     [ "$COMMAND_STATUS" = started ] && COMMAND_STATUS=1
@@ -180,6 +251,7 @@ run_without_datalad() {
 
 commit_pending() {
     local message="$1"
+    scrub_record
     [ -s "$NOTES" ] && redact < "$NOTES" > "$CLONE/$OUTPUT_PATH/record.log"
     git -C "$CLONE" add -A -- "$OUTPUT_PATH" 2>> "$NOTES"
     git -C "$CLONE" diff --cached --quiet || git -C "$CLONE" commit -q -m "$message" 2>> "$NOTES"
@@ -206,47 +278,78 @@ deliver_through_shared_checkout() {
 }
 
 move_onto_shared_branch() {
+    # Every step that must succeed exits the subshell explicitly: `set -e` would not help, since
+    # it is switched off inside a function called from a condition, as this one is.
     (
-        set -e
-        cd "$LOG_REPOSITORY"
-        git cherry-pick --abort > /dev/null 2>&1 || true
-        git rebase --abort > /dev/null 2>&1 || true
-        git reset -q --hard
+        cd "$LOG_REPOSITORY" || exit 1
+        git cherry-pick --abort > /dev/null 2>&1
+        git rebase --abort > /dev/null 2>&1
+        git reset -q --hard || exit 1
         git fetch -q origin 2>> "$NOTES" || echo "$(date '+%F %T') could not fetch from GitHub" >> "$NOTES"
         if git rev-parse --verify -q "refs/heads/$BRANCH" > /dev/null; then
             git checkout -q "$BRANCH"
         elif git rev-parse --verify -q "refs/remotes/origin/$BRANCH" > /dev/null; then
             git checkout -q -b "$BRANCH" "origin/$BRANCH"
+        elif git rev-parse --verify -q refs/remotes/origin/main > /dev/null; then
+            git checkout -q -b "$BRANCH" origin/main
         else
             git checkout -q -b "$BRANCH" main
+        fi || exit 1
+        # A new day's throwaway clones start from main, so it follows GitHub's.
+        if git rev-parse --verify -q refs/remotes/origin/main > /dev/null; then
+            git update-ref refs/heads/main refs/remotes/origin/main
         fi
         if git rev-parse --verify -q "refs/remotes/origin/$BRANCH" > /dev/null; then
-            git rebase -q "origin/$BRANCH" 2>> "$NOTES"
+            git rebase -q "origin/$BRANCH" 2>> "$NOTES" || exit 1
         fi
-        git fetch -q "$CLONE" HEAD
-        git cherry-pick --allow-empty --keep-redundant-commits "${DELIVERED:-$CLONE_START}..FETCH_HEAD" > /dev/null 2>> "$NOTES"
+        git fetch -q "$CLONE" HEAD || exit 1
+        git cherry-pick --allow-empty --keep-redundant-commits "${DELIVERED:-$CLONE_START}..FETCH_HEAD" > /dev/null 2>> "$NOTES" || exit 1
         if [ -n "$(ls -A untracked/unpushed 2> /dev/null)" ]; then
-            mkdir -p recovered
-            cp -r untracked/unpushed/. recovered/
-            rm -rf untracked/unpushed
-            git add -A recovered
-            git commit -q -m "[DANDI Compute] recovered records that could not be delivered earlier"
+            # Parked records are removed only once they are committed under recovered/.
+            mkdir -p recovered && cp -r untracked/unpushed/. recovered/ && git add -A recovered \
+                && git commit -q -m "[DANDI Compute] recovered records that could not be delivered earlier" \
+                && rm -rf untracked/unpushed \
+                || echo "$(date '+%F %T') could not commit the parked records; they stay parked" >> "$NOTES"
         fi
-    ) 9>&- || {
+    ) 9>&-
+    if [ "$?" -ne 0 ]; then
+        show_git_error
         note "could not move the record onto $BRANCH in the shared checkout"
         git -C "$LOG_REPOSITORY" cherry-pick --abort > /dev/null 2>&1
         git -C "$LOG_REPOSITORY" rebase --abort > /dev/null 2>&1
         return 1
-    }
+    fi
 
     local attempt
     for attempt in 1 2 3; do
-        git -C "$LOG_REPOSITORY" push -q origin "$BRANCH" 2>> "$NOTES" && return 0
+        git -C "$LOG_REPOSITORY" push -q origin "$BRANCH" 2>> "$NOTES" && break
+        declined_by_rule && break
         git -C "$LOG_REPOSITORY" pull -q --rebase origin "$BRANCH" 2>> "$NOTES" || true
         sleep $((attempt * 5))
     done
-    note "could not push $BRANCH from the shared checkout; it stays there for the next push"
+    if ! git -C "$LOG_REPOSITORY" merge-base --is-ancestor "$BRANCH" "refs/remotes/origin/$BRANCH" 2> /dev/null; then
+        show_git_error
+        note "could not push $BRANCH from the shared checkout; it stays there for the next push"
+    fi
+    clean_up_day_branches
     return 0
+}
+
+# Earlier days' branches in the shared checkout are pushed if GitHub lacks any of their records,
+# then deleted once GitHub has them all; one that cannot be pushed stays for the next delivery.
+# Afterwards, branches deleted on GitHub are dropped from origin/ as well.
+clean_up_day_branches() {
+    local branch
+    git -C "$LOG_REPOSITORY" for-each-ref --format='%(refname:short)' 'refs/heads/[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]' \
+        | while read -r branch; do
+            [ "$branch" = "$BRANCH" ] && continue
+            if ! git -C "$LOG_REPOSITORY" merge-base --is-ancestor "$branch" "refs/remotes/origin/$branch" 2> /dev/null; then
+                git -C "$LOG_REPOSITORY" push -q origin "$branch" 2>> "$NOTES" \
+                    || { show_git_error; note "could not push $branch from the shared checkout; it stays there for the next push"; continue; }
+            fi
+            git -C "$LOG_REPOSITORY" branch -q -D "$branch" 2>> "$NOTES"
+        done
+    git -C "$LOG_REPOSITORY" remote prune origin > /dev/null 2>> "$NOTES"
 }
 
 # Push the clone's commits straight to the day's branch on GitHub.
@@ -258,8 +361,10 @@ deliver_directly() {
             git -C "$CLONE" rebase -q FETCH_HEAD 2>> "$NOTES" || { git -C "$CLONE" rebase --abort; note "could not rebase onto GitHub's $BRANCH"; }
         fi
         git -C "$CLONE" push -q "$url" "HEAD:refs/heads/$BRANCH" 2>> "$NOTES" && return 0
+        declined_by_rule && break
         sleep $((attempt * 5))
     done
+    show_git_error
     note "could not push to GitHub"
     return 1
 }
@@ -295,7 +400,7 @@ main() {
     elif ! deliver_through_shared_checkout; then
         commit_pending "[DANDI Compute] $NAME: record.log (delivery)"
         deliver_directly || park
-    elif [ -s "$NOTES" ] && ! redact < "$NOTES" | cmp -s - "$CLONE/$OUTPUT_PATH/record.log"; then
+    elif [ -s "$NOTES" ] && [ "$(redact < "$NOTES")" != "$(cat "$CLONE/$OUTPUT_PATH/record.log" 2> /dev/null)" ]; then
         # Problems met while delivering belong in the record too.
         commit_pending "[DANDI Compute] $NAME: record.log (delivery)"
         deliver_through_shared_checkout || deliver_directly || park
