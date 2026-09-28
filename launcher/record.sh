@@ -64,6 +64,12 @@ note() {
     [ -n "$WORK_DIRECTORY" ] && echo "$(date '+%F %T') $*" >> "$NOTES"
 }
 
+# The last lines git wrote to record.log, shown with a failure so the reason reaches the job's own
+# log even when the record itself cannot be delivered.
+show_git_error() {
+    [ -s "$NOTES" ] && tail -n 6 "$NOTES" | redact | sed 's/^/[record.sh]   /' >&2
+}
+
 # Commits need an identity even where git has none configured.
 git config user.email > /dev/null 2>&1 || export GIT_AUTHOR_NAME="DANDI Compute" GIT_AUTHOR_EMAIL="dandi-compute@users.noreply.github.com" \
     GIT_COMMITTER_NAME="DANDI Compute" GIT_COMMITTER_EMAIL="dandi-compute@users.noreply.github.com"
@@ -269,6 +275,7 @@ move_onto_shared_branch() {
         fi
     ) 9>&-
     if [ "$?" -ne 0 ]; then
+        show_git_error
         note "could not move the record onto $BRANCH in the shared checkout"
         git -C "$LOG_REPOSITORY" cherry-pick --abort > /dev/null 2>&1
         git -C "$LOG_REPOSITORY" rebase --abort > /dev/null 2>&1
@@ -282,6 +289,7 @@ move_onto_shared_branch() {
         sleep $((attempt * 5))
     done
     if ! git -C "$LOG_REPOSITORY" merge-base --is-ancestor "$BRANCH" "refs/remotes/origin/$BRANCH" 2> /dev/null; then
+        show_git_error
         note "could not push $BRANCH from the shared checkout; it stays there for the next push"
     fi
     clean_up_day_branches
@@ -298,7 +306,7 @@ clean_up_day_branches() {
             [ "$branch" = "$BRANCH" ] && continue
             if ! git -C "$LOG_REPOSITORY" merge-base --is-ancestor "$branch" "refs/remotes/origin/$branch" 2> /dev/null; then
                 git -C "$LOG_REPOSITORY" push -q origin "$branch" 2>> "$NOTES" \
-                    || { note "could not push $branch from the shared checkout; it stays there for the next push"; continue; }
+                    || { show_git_error; note "could not push $branch from the shared checkout; it stays there for the next push"; continue; }
             fi
             git -C "$LOG_REPOSITORY" branch -q -D "$branch" 2>> "$NOTES"
         done
@@ -316,6 +324,7 @@ deliver_directly() {
         git -C "$CLONE" push -q "$url" "HEAD:refs/heads/$BRANCH" 2>> "$NOTES" && return 0
         sleep $((attempt * 5))
     done
+    show_git_error
     note "could not push to GitHub"
     return 1
 }
@@ -351,7 +360,7 @@ main() {
     elif ! deliver_through_shared_checkout; then
         commit_pending "[DANDI Compute] $NAME: record.log (delivery)"
         deliver_directly || park
-    elif [ -s "$NOTES" ] && ! redact < "$NOTES" | cmp -s - "$CLONE/$OUTPUT_PATH/record.log"; then
+    elif [ -s "$NOTES" ] && ! cmp -s <(redact < "$NOTES") "$CLONE/$OUTPUT_PATH/record.log"; then
         # Problems met while delivering belong in the record too.
         commit_pending "[DANDI Compute] $NAME: record.log (delivery)"
         deliver_through_shared_checkout || deliver_directly || park
