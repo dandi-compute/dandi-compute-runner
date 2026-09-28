@@ -6,7 +6,7 @@
 # Records made before record.sh masked them could hold a token that duct sampled from a command
 # line, and duct's info.json the host, user, OS and SLURM variables it now leaves out. Only commits
 # GitHub does not have are rewritten, their files and messages alike, with launcher/redact.sed and
-# under the lock record.sh delivers under. The next record pushes them.
+# under the locks record.sh delivers under. The next record pushes them.
 #
 # Each file version new since GitHub's copy is masked once, and only the commits holding a version
 # that changed get it swapped in their index; nothing is checked out, so a day's backlog of
@@ -21,9 +21,11 @@ PYTHON=/orcd/data/dandi/001/environments/name-datalad_env/bin/python
 [ -x "$PYTHON" ] || PYTHON=$(command -v python3)
 
 cd "$LOG_REPOSITORY"
-exec 9> .git/dandi-compute-record.lock
 echo "Waiting for the shared checkout, which record.sh locks while it delivers a record..."
-flock 9
+# One lock per kind of record, each guarding that kind's worktree, and the single lock of the
+# record.sh from before the kinds had their own.
+exec 7> .git/dandi-compute-record-logs.lock 8> .git/dandi-compute-record-monitor.lock 9> .git/dandi-compute-record.lock
+flock 7 && flock 8 && flock 9
 
 git cherry-pick --abort > /dev/null 2>&1 || true
 git rebase --abort > /dev/null 2>&1 || true

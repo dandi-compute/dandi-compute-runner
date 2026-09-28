@@ -8,20 +8,21 @@
 #   NAME     a short name for the operation, used in the record's directory name
 #
 # The record lands in KIND/{YYYYMMDDTHHMMSS}-NAME/ on the day's branch for its kind
-# (KIND/YYYY-MM-DD) of the global logs repository, a DataLad dataset checked out at $LOG_REPOSITORY, and is pushed to
-# GitHub. A monitor record goes in monitor/{HH}/{YYYYMMDDTHHMMSS}-NAME/ instead, and writes that
-# path, relative to monitor/, to monitor/LATEST, so the newest snapshot can be looked up without
-# listing monitor/. The command runs under `datalad run`,
-# inside duct when it is available, in a throwaway clone, so the shared checkout is locked only
-# while the finished record is moved onto its branch. The command runs in the directory record.sh
+# (KIND/YYYY-MM-DD) of the global logs repository, a DataLad dataset checked out at
+# $LOG_REPOSITORY, and is pushed to GitHub. A monitor record goes in
+# monitor/{HH}/{YYYYMMDDTHHMMSS}-NAME/ instead, and writes that path, relative to monitor/, to
+# monitor/LATEST, so the newest snapshot can be looked up without listing monitor/. The command
+# runs under `datalad run`, inside duct when it is available, in a throwaway clone, so the shared
+# checkout is locked only while the finished record is moved onto its branch, and then only its
+# worktree for KIND, so the kinds never wait on each other. The command runs in the directory record.sh
 # was called from, and record.sh exits with its exit status.
 #
 # Recording never stops the work and never loses a record. Whatever fails along the way is
 # written to record.log beside the command's output:
 #   - without DataLad, or when `datalad run` fails before the command starts, the command runs
 #     anyway and its output is committed with plain git;
-#   - when the shared checkout is busy or broken, the record is pushed from the throwaway clone
-#     straight to GitHub;
+#   - when the shared checkout (its worktree for KIND, under untracked/worktrees/) is busy or
+#     broken, the record is pushed from the throwaway clone straight to GitHub;
 #   - when GitHub cannot be reached either, the record is parked in untracked/unpushed/ in the
 #     shared checkout, and the next delivery that gets through commits it under recovered/.
 #
@@ -282,17 +283,22 @@ commit_pending() {
 # monitor/LATEST. Every rebase and cherry-pick below settles it with `-X theirs`, for the record
 # being moved; should that leave an older snapshot named, the next snapshot names itself.
 
-# Move the clone's commits made since the last delivery onto the day's branch in the shared
-# checkout, commit anything parked earlier, and push, all under the shared checkout's lock.
+# Each kind delivers through its own worktree of the shared checkout, under its own lock, so the
+# snapshots every 5 minutes never wait on a task's delivery nor it on theirs. The worktrees live in
+# untracked/, which the repository ignores.
+WORKTREE="$LOG_REPOSITORY/untracked/worktrees/$KIND"
+
+# Move the clone's commits made since the last delivery onto the day's branch in this kind's
+# worktree, commit anything parked earlier, and push, all under this kind's lock.
 DELIVERED=""
 deliver_through_shared_checkout() {
-    local lock_file="$LOG_REPOSITORY/.git/dandi-compute-record.lock" status
+    local lock_file="$LOG_REPOSITORY/.git/dandi-compute-record-$KIND.lock" status
     exec 9> "$lock_file" || { note "cannot open $lock_file"; return 1; }
     if flock -w "$LOCK_TIMEOUT_SECONDS" 9; then
-        move_onto_shared_branch
+        ensure_worktree && move_onto_shared_branch
         status=$?
     else
-        note "timed out waiting for the shared checkout"
+        note "timed out waiting for the shared checkout's $KIND worktree"
         status=1
     fi
     exec 9>&-
@@ -300,15 +306,35 @@ deliver_through_shared_checkout() {
     return "$status"
 }
 
+# This kind's worktree, made afresh when it is missing or broken. Whatever it held is on the
+# shared repository's branches, so nothing is lost by making it again.
+ensure_worktree() {
+    local top
+    top=$(git -C "$WORKTREE" rev-parse --show-toplevel 2> /dev/null) && [ "$top" = "$(cd "$WORKTREE" && pwd -P)" ] && return 0
+    rm -rf "$WORKTREE"
+    git -C "$LOG_REPOSITORY" worktree prune 2>> "$NOTES"
+    mkdir -p "$(dirname "$WORKTREE")" \
+        && git -C "$LOG_REPOSITORY" worktree add -q --detach "$WORKTREE" 2>> "$NOTES" \
+        || { note "could not make the $KIND worktree of the shared checkout"; return 1; }
+    # The shared checkout itself holds no day's branch, which git would refuse to check out in a
+    # worktree or to delete once its records are on GitHub.
+    git -C "$LOG_REPOSITORY" checkout -q --detach 2> /dev/null
+    return 0
+}
+
 move_onto_shared_branch() {
     # Every step that must succeed exits the subshell explicitly: `set -e` would not help, since
     # it is switched off inside a function called from a condition, as this one is.
     (
-        cd "$LOG_REPOSITORY" || exit 1
+        cd "$WORKTREE" || exit 1
         git cherry-pick --abort > /dev/null 2>&1
         git rebase --abort > /dev/null 2>&1
         git reset -q --hard || exit 1
-        git fetch -q origin 2>> "$NOTES" || echo "$(date '+%F %T') could not fetch from GitHub" >> "$NOTES"
+        # Only this kind's branch is fetched, so the other kind's worktree, fetching at the same
+        # time, never contends for the same refs; main only matters on a new day.
+        git fetch -q origin "+refs/heads/$BRANCH:refs/remotes/origin/$BRANCH" 2> /dev/null \
+            || git fetch -q origin "+refs/heads/main:refs/remotes/origin/main" 2>> "$NOTES" \
+            || echo "$(date '+%F %T') could not fetch from GitHub" >> "$NOTES"
         if git rev-parse --verify -q "refs/heads/$BRANCH" > /dev/null; then
             git checkout -q "$BRANCH"
         elif git rev-parse --verify -q "refs/remotes/origin/$BRANCH" > /dev/null; then
@@ -320,37 +346,31 @@ move_onto_shared_branch() {
         fi || exit 1
         # A new day's throwaway clones start from main, so it follows GitHub's.
         if git rev-parse --verify -q refs/remotes/origin/main > /dev/null; then
-            git update-ref refs/heads/main refs/remotes/origin/main
+            git update-ref refs/heads/main refs/remotes/origin/main 2> /dev/null
         fi
         if git rev-parse --verify -q "refs/remotes/origin/$BRANCH" > /dev/null; then
             git rebase -q -X theirs "origin/$BRANCH" 2>> "$NOTES" || exit 1
         fi
         git fetch -q "$CLONE" HEAD || exit 1
         git cherry-pick -X theirs --allow-empty --keep-redundant-commits "${DELIVERED:-$CLONE_START}..FETCH_HEAD" > /dev/null 2>> "$NOTES" || exit 1
-        if [ -n "$(ls -A untracked/unpushed 2> /dev/null)" ]; then
-            # Parked records are removed only once they are committed under recovered/.
-            mkdir -p recovered && cp -r untracked/unpushed/. recovered/ && git add -A recovered \
-                && git commit -q -m "[DANDI Compute] recovered records that could not be delivered earlier" \
-                && rm -rf untracked/unpushed \
-                || echo "$(date '+%F %T') could not commit the parked records; they stay parked" >> "$NOTES"
-        fi
+        recover_parked
     ) 9>&-
     if [ "$?" -ne 0 ]; then
         show_git_error
         note "could not move the record onto $BRANCH in the shared checkout"
-        git -C "$LOG_REPOSITORY" cherry-pick --abort > /dev/null 2>&1
-        git -C "$LOG_REPOSITORY" rebase --abort > /dev/null 2>&1
+        git -C "$WORKTREE" cherry-pick --abort > /dev/null 2>&1
+        git -C "$WORKTREE" rebase --abort > /dev/null 2>&1
         return 1
     fi
 
     local attempt
     for attempt in 1 2 3; do
-        git -C "$LOG_REPOSITORY" push -q origin "$BRANCH" 2>> "$NOTES" && break
+        git -C "$WORKTREE" push -q origin "$BRANCH" 2>> "$NOTES" && break
         declined_by_rule && break
-        git -C "$LOG_REPOSITORY" pull -q --rebase origin "$BRANCH" 2>> "$NOTES" || true
+        git -C "$WORKTREE" pull -q --rebase -X theirs origin "$BRANCH" 2>> "$NOTES" || true
         sleep $((attempt * 5))
     done
-    if ! git -C "$LOG_REPOSITORY" merge-base --is-ancestor "$BRANCH" "refs/remotes/origin/$BRANCH" 2> /dev/null; then
+    if ! git -C "$WORKTREE" merge-base --is-ancestor "$BRANCH" "refs/remotes/origin/$BRANCH" 2> /dev/null; then
         show_git_error
         note "could not push $BRANCH from the shared checkout; it stays there for the next push"
     fi
@@ -358,19 +378,33 @@ move_onto_shared_branch() {
     return 0
 }
 
-# Earlier days' branches in the shared checkout, of every kind and the undivided YYYY-MM-DD
-# branches from before the kinds were split, are pushed if GitHub lacks any of their records,
-# then deleted once GitHub has them all; one that cannot be pushed stays for the next delivery.
-# Afterwards, branches deleted on GitHub are dropped from origin/ as well.
-DAY_BRANCH_PATTERNS=(
-    'refs/heads/[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'
-    'refs/heads/*/[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'
-)
+# Records parked by either kind are committed under recovered/ by whichever delivers next. The
+# directory is first renamed away, which only one of the two can do, and is removed only once its
+# records are committed; one left by a failed attempt is retried by the same kind.
+recover_parked() {
+    local unpushed="$LOG_REPOSITORY/untracked/unpushed" taken="$LOG_REPOSITORY/untracked/recovering-$KIND"
+    if [ ! -d "$taken" ]; then
+        [ -n "$(ls -A "$unpushed" 2> /dev/null)" ] || return 0
+        mv "$unpushed" "$taken" 2> /dev/null || return 0
+    fi
+    mkdir -p recovered && cp -r "$taken/." recovered/ && git add -A recovered \
+        && git commit -q -m "[DANDI Compute] recovered records that could not be delivered earlier" \
+        && rm -rf "$taken" \
+        || echo "$(date '+%F %T') could not commit the parked records; they stay in $taken" >> "$NOTES"
+    return 0
+}
+
+# Earlier days' branches of this kind in the shared checkout are pushed if GitHub lacks any of
+# their records, then deleted once GitHub has them all; one that cannot be pushed stays for the
+# next delivery. The logs deliveries do the same for the undivided YYYY-MM-DD branches from before
+# the kinds were split. Afterwards, branches deleted on GitHub are dropped from origin/ as well.
+DAY_BRANCH_PATTERNS=("refs/heads/$KIND/[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]")
+[ "$KIND" = logs ] && DAY_BRANCH_PATTERNS+=('refs/heads/[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]')
 clean_up_day_branches() {
     local branch
     git -C "$LOG_REPOSITORY" for-each-ref --format='%(refname:short)' "${DAY_BRANCH_PATTERNS[@]}" \
         | while read -r branch; do
-            [[ "$branch" == *"$DATE" ]] && continue
+            [ "$branch" = "$BRANCH" ] && continue
             if ! git -C "$LOG_REPOSITORY" merge-base --is-ancestor "$branch" "refs/remotes/origin/$branch" 2> /dev/null; then
                 git -C "$LOG_REPOSITORY" push -q origin "$branch" 2>> "$NOTES" \
                     || { show_git_error; note "could not push $branch from the shared checkout; it stays there for the next push"; continue; }
@@ -399,7 +433,7 @@ deliver_directly() {
 
 # Last resort: keep the record's files beside the shared checkout for the next delivery.
 park() {
-    local parked="$LOG_REPOSITORY/untracked/unpushed/$DATE/$(basename "$OUTPUT_PATH")"
+    local parked="$LOG_REPOSITORY/untracked/unpushed/$BRANCH/$(basename "$OUTPUT_PATH")"
     mkdir -p "$parked" && cp -r "$CLONE/$OUTPUT_PATH/." "$parked/" && redact < "$NOTES" > "$parked/record.log" \
         && note "parked the record in $parked" && return 0
     echo "[record.sh] could not park the record; it is lost: $OUTPUT_PATH" >&2
