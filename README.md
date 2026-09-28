@@ -86,7 +86,7 @@ The login node also runs, every 5 minutes, [`launcher/monitor.sh`](launcher/moni
 
 ## The self-hosted runner
 
-The workflows in this repository run on a self-hosted runner labelled `submitter`. It runs on the login node rather than in a SLURM job, since its steps only do light work and submit sbatch jobs for anything heavy. The crontab calls [`launcher/launch_runner.sh`](launcher/launch_runner.sh) every 5 minutes, which starts the runner under a lock, so it comes back within 5 minutes of stopping. Its output goes to `untracked/runner/` in the global logs checkout, and each workflow step records itself there through `record.sh`.
+The workflows in this repository run on a self-hosted runner labelled `submitter`. It runs on the login node rather than in a SLURM job, since its steps only do light work and submit sbatch jobs for anything heavy. The crontab calls [`launcher/launch_runner.sh`](launcher/launch_runner.sh) every 5 minutes, which starts the runner under a lock, so it comes back within 5 minutes of stopping. Its output goes to `untracked/runner/` in the global logs checkout, and each workflow step records itself there through `record.sh`. A step still runs, unrecorded, on a checkout that doesn't have `record.sh` yet, so Update codebase can bring it in.
 
 To register the runner in the first place:
 

@@ -45,11 +45,12 @@ jobs:
     needs: CheckEngaging
     name: Update container images
     runs-on: [self-hosted, mit, engaging, submitter]
-    # Each step records itself in the global logs repository (see launcher/record.sh); the shell
-    # after `--` is GitHub's own default for bash.
+    # Each step records itself in the global logs repository (see launcher/record.sh), inside
+    # GitHub's own default shell for bash. Until record.sh is on this machine (the first Update
+    # codebase run is what brings it), a step runs in that shell unrecorded rather than failing.
     defaults:
       run:
-        shell: /orcd/data/dandi/001/dandi-compute/dandi-compute-runner/launcher/record.sh logs update-container-images -- bash --noprofile --norc -eo pipefail {0}
+        shell: bash --noprofile --norc -c "test -x /orcd/data/dandi/001/dandi-compute/dandi-compute-runner/launcher/record.sh && exec /orcd/data/dandi/001/dandi-compute/dandi-compute-runner/launcher/record.sh logs update-container-images -- bash --noprofile --norc -eo pipefail $0; echo record.sh not found, running unrecorded >&2; exec bash --noprofile --norc -eo pipefail $0" {0}
     timeout-minutes: 300
     env:
       VERSION: ${{ inputs.version }}
