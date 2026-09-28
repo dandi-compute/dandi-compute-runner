@@ -100,16 +100,14 @@ prepare_clone() {
 }
 
 # The command itself, as recorded: from the clone's root it moves to the directory record.sh
-# was called from, runs, and leaves its exit status beside its output. Without duct it also
-# captures its own output, which it still echoes.
+# was called from, runs, and leaves its output and exit status in the record, still echoing
+# its output.
 inner_command() {
-    local capture="$1"
-    shift
-    local script='output="$PWD/$0"; directory="$1"; capture="$2"; shift 2; echo started > "$output/exit_status"
+    local script='output="$PWD/$0"; directory="$1"; shift; echo started > "$output/exit_status"
 cd "$directory" || { echo 111 > "$output/exit_status"; exit 111; }
-if [ "$capture" = yes ]; then "$@" > >(tee "$output/stdout") 2> >(tee "$output/stderr" >&2); else "$@"; fi
+"$@" > >(tee "$output/stdout") 2> >(tee "$output/stderr" >&2)
 status=$?; echo "$status" > "$output/exit_status"; exit "$status"'
-    printf '%s\0' bash -c "$script" "$OUTPUT_PATH" "$ORIGINAL_DIRECTORY" "$capture" "$@"
+    printf '%s\0' bash -c "$script" "$OUTPUT_PATH" "$ORIGINAL_DIRECTORY" "$@"
 }
 
 # The day's copy of GitHub's script file for a workflow step, which GitHub deletes afterwards.
@@ -162,13 +160,13 @@ run_with_datalad() {
     datalad=$(find_datalad) || { note "DataLad not found in any of ${DATALAD_ENVIRONMENTS[*]}"; return 1; }
     local run=()
     if find_duct; then
+        # duct's own files go under .duct/; the output is captured beside them by the command.
         # --fail-time 0 keeps the logs of a command that fails quickly, which duct would delete.
-        run=("${DUCT[@]}" -l NONE --fail-time 0 -p "$OUTPUT_PATH/")
-        mapfile -d '' -t inner < <(inner_command no "$@")
+        run=("${DUCT[@]}" -l NONE --fail-time 0 -c none -p "$OUTPUT_PATH/.duct/")
     else
         note "duct not found in any of ${DATALAD_ENVIRONMENTS[*]}; recording without resource usage"
-        mapfile -d '' -t inner < <(inner_command yes "$@")
     fi
+    mapfile -d '' -t inner < <(inner_command "$@")
     run+=("${inner[@]}")
     # datalad run fills {placeholders} in the command, so literal braces are doubled.
     run=("${run[@]//\{/\{\{}")
@@ -202,7 +200,7 @@ run_with_datalad() {
 
 run_without_datalad() {
     note "running the command without DataLad"
-    mapfile -d '' -t inner < <(inner_command yes "$@")
+    mapfile -d '' -t inner < <(inner_command "$@")
     (cd "$CLONE" && "${inner[@]}")
     COMMAND_STATUS=$(cat "$CLONE/$OUTPUT_PATH/exit_status" 2> /dev/null || echo 1)
     [ "$COMMAND_STATUS" = started ] && COMMAND_STATUS=1
