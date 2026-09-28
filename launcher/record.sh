@@ -9,10 +9,11 @@
 #
 # The record lands in KIND/{YYYYMMDDTHHMMSS}-NAME/ on the day's branch (YYYY-MM-DD) of the
 # global logs repository, a DataLad dataset checked out at $LOG_REPOSITORY, and is pushed to
-# GitHub. The command runs under `datalad run`, inside duct when it is available, in a throwaway
-# clone, so the shared checkout is locked only while the finished record is moved onto its
-# branch. The command runs in the directory record.sh was called from, and record.sh exits with
-# its exit status.
+# GitHub. A monitor record also writes its directory's name to monitor/LATEST, so the newest
+# snapshot can be looked up without listing monitor/. The command runs under `datalad run`,
+# inside duct when it is available, in a throwaway clone, so the shared checkout is locked only
+# while the finished record is moved onto its branch. The command runs in the directory record.sh
+# was called from, and record.sh exits with its exit status.
 #
 # Recording never stops the work and never loses a record. Whatever fails along the way is
 # written to record.log beside the command's output:
@@ -51,6 +52,9 @@ ORIGINAL_DIRECTORY="$PWD"
 DATE=$(date +%F)
 BRANCH="$DATE"
 OUTPUT_PATH="$KIND/$(date +%Y%m%dT%H%M%S)-$NAME"
+# What the record commits: its directory, and for a monitor snapshot monitor/LATEST naming it.
+RECORD_PATHS=("$OUTPUT_PATH")
+[ "$KIND" = monitor ] && RECORD_PATHS+=("$KIND/LATEST")
 export DANDI_COMPUTE_RECORDED=1
 
 WORK_DIRECTORY=$(mktemp -d "${TMPDIR:-/tmp}/dandi-compute-record-XXXXXX") || WORK_DIRECTORY=""
@@ -218,8 +222,8 @@ run_with_datalad() {
         local message masked
         message=$(git -C "$CLONE" log -1 --format=%B)
         masked=$(redact <<< "$message")
-        if [ -n "$(git -C "$CLONE" status --porcelain -- "$OUTPUT_PATH")" ] || [ "$message" != "$masked" ]; then
-            git -C "$CLONE" add -A -- "$OUTPUT_PATH" && git -C "$CLONE" commit -q --amend -m "$masked" 2>> "$NOTES" \
+        if [ -n "$(git -C "$CLONE" status --porcelain -- "${RECORD_PATHS[@]}")" ] || [ "$message" != "$masked" ]; then
+            git -C "$CLONE" add -A -- "${RECORD_PATHS[@]}" && git -C "$CLONE" commit -q --amend -m "$masked" 2>> "$NOTES" \
                 || note "could not amend the masked record into the run record"
         fi
     fi
@@ -238,7 +242,7 @@ run_with_datalad() {
         # A failing command leaves its run record in .git/COMMIT_EDITMSG for saving by hand.
         if [ -f "$CLONE/.git/COMMIT_EDITMSG" ]; then
             sed -i "${REDACT[@]}" "$CLONE/.git/COMMIT_EDITMSG"
-            (cd "$CLONE" && "$datalad" -l warning -f disabled save -F .git/COMMIT_EDITMSG -- "$OUTPUT_PATH") 2>> "$NOTES" \
+            (cd "$CLONE" && "$datalad" -l warning -f disabled save -F .git/COMMIT_EDITMSG -- "${RECORD_PATHS[@]}") 2>> "$NOTES" \
                 || note "could not save the run record of the failed command"
         fi
     fi
@@ -257,11 +261,15 @@ commit_pending() {
     local message="$1"
     scrub_record
     [ -s "$NOTES" ] && redact < "$NOTES" > "$CLONE/$OUTPUT_PATH/record.log"
-    git -C "$CLONE" add -A -- "$OUTPUT_PATH" 2>> "$NOTES"
+    git -C "$CLONE" add -A -- "${RECORD_PATHS[@]}" 2>> "$NOTES"
     git -C "$CLONE" diff --cached --quiet || git -C "$CLONE" commit -q -m "$message" 2>> "$NOTES"
 }
 
 # --- deliver the record ---------------------------------------------------------------------
+
+# Records never touch each other's files, so the only file two of them can conflict on is
+# monitor/LATEST. Every rebase and cherry-pick below settles it with `-X theirs`, for the record
+# being moved; should that leave an older snapshot named, the next snapshot names itself.
 
 # Move the clone's commits made since the last delivery onto the day's branch in the shared
 # checkout, commit anything parked earlier, and push, all under the shared checkout's lock.
@@ -304,10 +312,10 @@ move_onto_shared_branch() {
             git update-ref refs/heads/main refs/remotes/origin/main
         fi
         if git rev-parse --verify -q "refs/remotes/origin/$BRANCH" > /dev/null; then
-            git rebase -q "origin/$BRANCH" 2>> "$NOTES" || exit 1
+            git rebase -q -X theirs "origin/$BRANCH" 2>> "$NOTES" || exit 1
         fi
         git fetch -q "$CLONE" HEAD || exit 1
-        git cherry-pick --allow-empty --keep-redundant-commits "${DELIVERED:-$CLONE_START}..FETCH_HEAD" > /dev/null 2>> "$NOTES" || exit 1
+        git cherry-pick -X theirs --allow-empty --keep-redundant-commits "${DELIVERED:-$CLONE_START}..FETCH_HEAD" > /dev/null 2>> "$NOTES" || exit 1
         if [ -n "$(ls -A untracked/unpushed 2> /dev/null)" ]; then
             # Parked records are removed only once they are committed under recovered/.
             mkdir -p recovered && cp -r untracked/unpushed/. recovered/ && git add -A recovered \
@@ -362,7 +370,7 @@ deliver_directly() {
     url=$(github_url)
     for attempt in 1 2 3; do
         if git -C "$CLONE" fetch -q "$url" "$BRANCH" 2>> "$NOTES"; then
-            git -C "$CLONE" rebase -q FETCH_HEAD 2>> "$NOTES" || { git -C "$CLONE" rebase --abort; note "could not rebase onto GitHub's $BRANCH"; }
+            git -C "$CLONE" rebase -q -X theirs FETCH_HEAD 2>> "$NOTES" || { git -C "$CLONE" rebase --abort; note "could not rebase onto GitHub's $BRANCH"; }
         fi
         git -C "$CLONE" push -q "$url" "HEAD:refs/heads/$BRANCH" 2>> "$NOTES" && return 0
         declined_by_rule && break
@@ -393,6 +401,7 @@ main() {
     fi
     CLONE_START=$(git -C "$CLONE" rev-parse -q --verify HEAD || true)
     mkdir -p "$CLONE/$OUTPUT_PATH"
+    [ "$KIND" = monitor ] && basename "$OUTPUT_PATH" > "$CLONE/$KIND/LATEST"
     keep_step_script "$@"
 
     run_with_datalad "$@" || run_without_datalad "$@"
