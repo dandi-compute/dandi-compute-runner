@@ -1,5 +1,5 @@
 name: Check self-hosted runner
-description: Used to immediately cancel workflow if self-hosted runner isn't online.
+description: Fails the job, with a "runner offline" annotation, if no self-hosted runner with the given labels is online.
 
 inputs:
   labels:
@@ -18,11 +18,19 @@ runs:
       run: |
         set -e
         export GH_TOKEN="${{ inputs.token }}"
-        output=$("$GITHUB_ACTION_PATH/script.sh" "${{ inputs.labels }}")
+        if ! output=$("$GITHUB_ACTION_PATH/script.sh" "${{ inputs.labels }}"); then
+          echo "::error title=Runner check failed::Could not list the self-hosted runners of this repository, so whether the runner is online is unknown. See the log of this step."
+          exit 1
+        fi
         echo "Runner check output: $output"
         if [[ "$output" != "true" ]]; then
-          echo "Runner is offline. Triggering failure in workflow."
+          message="No self-hosted runner with labels ${{ inputs.labels }} is online, so the rest of this workflow did not run. Restart the runner, then re-run this workflow."
+          echo "::error title=Self-hosted runner offline::$message"
+          {
+            echo "### Self-hosted runner offline"
+            echo
+            echo "$message"
+          } >> "$GITHUB_STEP_SUMMARY"
           exit 1
-        else
-          echo "Runner is online. Proceeding."
         fi
+        echo "Runner is online. Proceeding."
