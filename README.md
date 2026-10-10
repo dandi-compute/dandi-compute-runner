@@ -34,7 +34,7 @@ The repository is kept public to allow anyone to see the runtime logs of the sub
    crontab /orcd/data/dandi/001/dandi-compute/dandi-compute-runner/launcher/crontab
    ```
 
-   That file is the only copy of the crontab. It replaces the whole user crontab, including the backup jobs it also lists. The "Refresh state" workflow and `launcher/revive.sh` reinstall it the same way, so change the file rather than the live crontab.
+   That file is the only copy of the crontab. It replaces the whole user crontab, including the backup jobs it also lists. `launcher/revive.sh` reinstalls it the same way every hour, so change the file rather than the live crontab.
 
 ## Global logs
 
@@ -56,6 +56,10 @@ chmod 600 /orcd/data/dandi/001/dandi-compute/dandi-compute-global-logs/.git/conf
 ```
 
 Every push goes through that clone's origin. Since duct samples the command line of every process a step starts, every file and message of a record passes through [`launcher/redact.sed`](launcher/redact.sed) before it is committed, which masks GitHub tokens, `Authorization` headers, credentials in URLs and DANDI API keys, including the one `record.sh` itself runs with wherever it appears. duct's `info.json` also leaves out the `system` and `env` duct records (host, user, OS, SLURM variables), through [`launcher/strip_duct_info.py`](launcher/strip_duct_info.py). Records made before that masking can hold a token, which GitHub's push protection rejects; [`launcher/scrub_global_logs.sh`](launcher/scrub_global_logs.sh) masks every record the shared checkout has not pushed yet, rewriting only the file versions that need it without checking anything out, and the next record pushes them.
+
+## Queue state
+
+The [Refresh state](https://github.com/dandi-compute/dandi-compute-runner/actions/workflows/refresh-state.yml) workflow rewrites `derivatives/jobs.tsv`, `paths.tsv` and their sidecars in the job capsules (001697) and failed runs archive (001873) Dandisets. It reads only from DANDI and writes only to DANDI, so it runs on a GitHub-hosted runner rather than on the cluster. It runs every hour and after each run of the workflows that change the queue, and uploads only the tables whose content changed. Its Python environment is cached per commit of dandi-compute-core's `main`.
 
 ## SLURM limits
 
