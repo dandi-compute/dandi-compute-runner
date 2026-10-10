@@ -21,13 +21,24 @@ LAUNCHER_DIRECTORY="$BASE_DIRECTORY/dandi-compute-runner/launcher"
 # The latest local tag is what new job capsules are formed against. Its files are read with
 # `git show`, since the shared checkout is on whatever tag the last capsule used.
 TAG=$(python -c "from dandi_compute_code.queue import PipelineQueue; print(PipelineQueue.resolve_latest_pipeline_version(pipeline='aind+ephys'))")
-SPIKEINTERFACE_VERSION=$(git -C "$PIPELINE_DIRECTORY" show "${TAG}:pipeline/capsule_versions.env" \
-    | grep -E '^SPIKEINTERFACE_VERSION=' | cut -d= -f2 | tr -d "[:space:]\"'")
-if [ -z "$SPIKEINTERFACE_VERSION" ]; then
-    echo "No SPIKEINTERFACE_VERSION in pipeline/capsule_versions.env at ${TAG}."
+if ! VERSIONS=$(git -C "$PIPELINE_DIRECTORY" show "${TAG}:pipeline/capsule_versions.env"); then
+    echo "The pipeline has no pipeline/capsule_versions.env at ${TAG}."
     exit 1
 fi
-CONTAINER_TAG="si-${SPIKEINTERFACE_VERSION}"
+# `|| true` since a key the release lacks makes grep fail, which under pipefail would end the
+# task silently.
+capsule_version() { grep -E "^$1=" <<< "$VERSIONS" | cut -d= -f2 | tr -d "[:space:]\"'" || true; }
+# Releases from 1.4.0 name the image tag outright. Earlier ones tag the images by SpikeInterface
+# version.
+CONTAINER_TAG=$(capsule_version CONTAINER_TAG)
+if [ -z "$CONTAINER_TAG" ]; then
+    SPIKEINTERFACE_VERSION=$(capsule_version SPIKEINTERFACE_VERSION)
+    if [ -z "$SPIKEINTERFACE_VERSION" ]; then
+        echo "Neither CONTAINER_TAG nor SPIKEINTERFACE_VERSION in pipeline/capsule_versions.env at ${TAG}."
+        exit 1
+    fi
+    CONTAINER_TAG="si-${SPIKEINTERFACE_VERSION}"
+fi
 echo "Pipeline ${TAG} uses image tag ${CONTAINER_TAG}"
 
 if "$LAUNCHER_DIRECTORY/tasks/pull_images.sh" --check "$CACHE_DIRECTORY" "$CONTAINER_TAG"; then

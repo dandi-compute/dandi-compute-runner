@@ -42,7 +42,12 @@ CONTAINER_TAG="$4"
 
 SCRIPT_FILE_PATH=$(mktemp --suffix=-pull_pipeline_images.sh)
 trap 'rm -f "$SCRIPT_FILE_PATH"' EXIT
-git -C "$PIPELINE_DIRECTORY" show "${TAG}:pull_pipeline_images.sh" > "$SCRIPT_FILE_PATH"
+# Releases from 1.4.0 keep the script under scripts/.
+if ! git -C "$PIPELINE_DIRECTORY" show "${TAG}:scripts/pull_pipeline_images.sh" > "$SCRIPT_FILE_PATH" 2> /dev/null \
+    && ! git -C "$PIPELINE_DIRECTORY" show "${TAG}:pull_pipeline_images.sh" > "$SCRIPT_FILE_PATH" 2> /dev/null; then
+    echo "The pipeline has no pull_pipeline_images.sh at ${TAG}."
+    exit 1
+fi
 
 set +u
 source /etc/profile.d/modules.sh
