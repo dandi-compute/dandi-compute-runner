@@ -10,8 +10,6 @@ on:
         description: "Maximum number of job capsules to create per pipeline."
         required: false
         default: "5"
-  schedule:
-    - cron: '0 0 * * *'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}

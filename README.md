@@ -18,7 +18,79 @@ The repository is kept public to allow anyone to see the runtime logs of the sub
 
 
 
-## How to setup the runners
+## Global logs
+
+Every operation on the cluster records itself in the global logs repository,
+[dandi-compute-global-logs](https://github.com/dandi-compute/dandi-compute-global-logs), checked out at `/orcd/data/dandi/001/dandi-compute/dandi-compute-global-logs`. That covers the scheduled tasks, every step of the workflows below, and a `squeue` snapshot every 5 minutes. The logs of job capsules themselves stay with each capsule and go to DANDI with it.
+
+Records land on a branch per day and kind, so old days can be dropped as branches and the two kinds update independently: operations on `logs/YYYY-MM-DD` under `logs/{timestamp}-{name}/`, and snapshots on `monitor/YYYY-MM-DD`, grouped by hour under `monitor/{HH}/{timestamp}-{name}/`. Each snapshot also writes its path relative to `monitor/` to `monitor/LATEST`, so the newest one can be looked up without listing `monitor/`. Each kind has its own worktree of the shared checkout (`untracked/worktrees/logs` and `untracked/worktrees/monitor`) and its own lock, so the snapshots and the tasks never wait on each other. Each record is a `datalad run` commit, which holds the exact command, where it ran and its exit status. The command's `stdout` and `stderr` are saved beside it, and it runs inside [duct](https://github.com/con/duct), which saves its `info.json` and `usage.jsonl` under `.duct/`. DataLad and duct come from `/orcd/data/dandi/001/environments/name-datalad_env`, which the Update codebase workflow creates when it is missing, or else from the LFP capsules' `name-lfp_environment`.
+
+[`launcher/record.sh`](launcher/record.sh) does the recording:
+
+```bash
+launcher/record.sh logs <name> -- <command> [args...]
+```
+
+It never stops the work and never drops a record. Whatever goes wrong while recording is written to a `record.log` beside the output:
+
+- **No DataLad:** the command still runs, and its output is committed with plain git.
+- **Shared checkout busy or broken:** the record is pushed straight to GitHub.
+- **GitHub unreachable:** the record is kept under `untracked/unpushed/` in the checkout, and the next record that gets through commits it under `recovered/`.
+
+The raw output of each SLURM job and of the runner also goes to `untracked/` in the checkout, in case recording itself fails.
+
+Since duct samples the command line of every process a step starts, every file and message of a record passes through [`launcher/redact.sed`](launcher/redact.sed) before it is committed, which masks GitHub tokens, `Authorization` headers, credentials in URLs and DANDI API keys, including the one `record.sh` itself runs with wherever it appears. duct's `info.json` also leaves out the `system` and `env` duct records (host, user, OS, SLURM variables), through [`launcher/strip_duct_info.py`](launcher/strip_duct_info.py). Records made before that masking can hold a token, which GitHub's push protection rejects; [`launcher/scrub_global_logs.sh`](launcher/scrub_global_logs.sh) masks every record the shared checkout has not pushed yet, rewriting only the file versions that need it without checking anything out, and the next record pushes them.
+
+## Scheduled tasks
+
+Nothing sits idle on the cluster. The crontab on the login node submits each recurring task as a short SLURM job that runs one `dandicompute` command and exits:
+
+| Task | When | SLURM job | Runs |
+|---|---|---|---|
+| [`dispatch`](launcher/tasks/dispatch.sh) | every 30 minutes | `DANDI-Compute-Dispatch`, `mit_quicktest`, 15 min | `jobs dispatch --refresh` |
+| [`images`](launcher/tasks/images.sh) | daily, 04:00 | `DANDI-Compute-Images`, `mit_quicktest`, 15 min | checks the latest AIND tag's container images are cached; if not, submits [`pull_images.sh`](launcher/tasks/pull_images.sh) (`DANDI-Compute-Image-Cache`, `mit_normal`, 32 GB, 4 h) |
+| [`create`](launcher/tasks/create.sh) | daily, 05:00 | `DANDI-Compute-Create`, `mit_preemptable`, 1 h | `jobs create --limit 5` per pipeline, then `jobs refresh` |
+| [`clean`](launcher/tasks/clean.sh) | weekly, Sunday 06:00 | `DANDI-Compute-Clean`, `mit_preemptable`, 2 h | `clean --work` |
+
+Each cron line calls [`launcher/submit_task.sh`](launcher/submit_task.sh), which submits the task through `guarded-submit -N <job name>`. That skips the submission while a job of the same name is still pending or running, so a task that is slow to start never piles up copies of itself.
+
+A dispatch skips any pipeline whose job array is still pending or running. When every pipeline's array is, it skips before reading anything, so an attempt while arrays churn costs seconds. Every attempt that was not skipped rewrites `jobs.tsv`.
+
+The login node also runs, every 5 minutes, [`launcher/monitor.sh`](launcher/monitor.sh) (the `squeue` snapshot) and [`launcher/launch_runner.sh`](launcher/launch_runner.sh) (see below).
+
+### Setup
+
+1. The tasks run outside GitHub Actions, so the secrets the workflows inject have to come from `~/.dandi_env` instead. The job arrays a dispatch submits inherit its environment, so it needs everything a capsule run needs.
+
+   ```bash
+   export DANDI_API_KEY=...
+   export DANDI_DEVEL=...
+   export KACHERY_API_KEY=...
+   export DANDICOMPUTE_OOP_FAILSAFE_LOG=...  # if used
+   ```
+
+2. Clone the global logs repository where the scripts expect it. Recording uses DataLad and duct as described under [Global logs](#global-logs), and records plainly without them:
+
+   ```bash
+   git clone https://x-access-token:<token>@github.com/dandi-compute/dandi-compute-global-logs /orcd/data/dandi/001/dandi-compute/dandi-compute-global-logs
+   chmod 600 /orcd/data/dandi/001/dandi-compute/dandi-compute-global-logs/.git/config
+   ```
+
+   The token needs contents: write on dandi-compute-global-logs. Records are pushed with the clone's origin, and so is a record pushed straight to GitHub when the checkout is busy. Every record is masked through `launcher/redact.sed` before it is committed.
+
+3. On the login node, install the crontab from [`launcher/crontab`](launcher/crontab):
+
+   ```bash
+   crontab /orcd/data/dandi/001/dandi-compute/dandi-compute-runner/launcher/crontab
+   ```
+
+   That file is the only copy of the crontab. It replaces the whole user crontab, including the backup jobs it also lists. The "Refresh state" workflow and `launcher/revive.sh` reinstall it the same way, so change the file rather than the live crontab.
+
+## The self-hosted runner
+
+The workflows in this repository run on a self-hosted runner labelled `submitter`. It runs on the login node rather than in a SLURM job, since its steps only do light work and submit sbatch jobs for anything heavy. The crontab calls [`launcher/launch_runner.sh`](launcher/launch_runner.sh) every 5 minutes, which starts the runner under a lock, so it comes back within 5 minutes of stopping. Its output goes to `untracked/runner/` in the global logs checkout, and each workflow step records itself there through `record.sh`. A step still runs, unrecorded, on a checkout that doesn't have `record.sh` yet, so Update codebase can bring it in.
+
+To register the runner in the first place:
 
 1. Go to Settings -> Actions -> Runners -> New self-hosted runner -> Linux
 2. Log into https://engaging-ood.mit.edu/ -> Open a new cluster shell
@@ -28,34 +100,6 @@ The repository is kept public to allow anyone to see the runtime logs of the sub
 6. Give the runner the name `submitter`
 7. Add the labels `mit`, `engaging`, and `submitter`
 8. Use the default work directory
-9. On the login node, install the crontab from [`launcher/crontab`](launcher/crontab):
-
-   ```bash
-   crontab /orcd/data/dandi/001/dandi-compute/dandi-compute-runner/launcher/crontab
-   ```
-
-   That file is the only copy of the crontab. It replaces the whole user crontab, including the backup jobs it also lists. The "Refresh state" workflow and `launcher/revive.sh` reinstall it the same way, so change the file rather than the live crontab.
-
-## Global logs
-
-Everything that runs on the cluster outside a job capsule is recorded in
-[dandi-compute-global-logs](https://github.com/dandi-compute/dandi-compute-global-logs), checked out at `/orcd/data/dandi/001/dandi-compute/dandi-compute-global-logs`. That covers every step of the self-hosted workflows, the cron trigger for dispatching, and a `squeue` snapshot every 5 minutes. The logs of job capsules themselves stay with each capsule and go to DANDI with it.
-
-[`launcher/record.sh`](launcher/record.sh) does the recording: `record.sh KIND NAME -- COMMAND...` runs the command and records it on that day's branch for its kind (`logs/YYYY-MM-DD` or `monitor/YYYY-MM-DD`, so the two update independently), under `logs/{timestamp}-{name}/` or, grouped by hour, `monitor/{HH}/{timestamp}-{name}/`. A monitor snapshot also writes its path relative to `monitor/` (`{HH}/{timestamp}-{name}`) to `monitor/LATEST`, so the newest one can be looked up without listing `monitor/`.
-
-- Each record is a `datalad run` commit holding the exact command, its directory and its exit status. The command's `stdout` and `stderr` are saved beside it, and it runs inside duct, which saves its `info.json` and `usage.jsonl` under `.duct/`. DataLad and duct come from `/orcd/data/dandi/001/environments/name-datalad_env`, which the Update codebase workflow creates when it is missing, or else from the LFP capsules' `name-lfp_environment`; without either the command is recorded with plain git.
-- The record is made in a throwaway clone and then moved onto the day's branch in the shared checkout's worktree for its kind (`untracked/worktrees/logs` or `untracked/worktrees/monitor`), which is locked only for that move and the push. Each kind has its own worktree and lock, so the snapshots and the tasks never wait on each other.
-- Recording never stops the work: the command always runs, its exit status is passed through, and anything that went wrong is pushed in the record's `record.log`. If the shared checkout is busy or broken, the record is pushed straight to GitHub. If GitHub cannot be reached, it is kept in `untracked/unpushed/` and delivered with the next record.
-- Workflow steps are recorded through each self-hosted job's `defaults.run.shell`, which also keeps the step's script and the run's URL. That shell starts in plain bash and hands the step to `record.sh` only when it is on the machine, so a checkout that predates `record.sh` still runs every step (unrecorded) and the Update codebase workflow can bring it in.
-
-To set it up, clone the repository with a token that can push to it (contents: write) in its URL:
-
-```bash
-git clone https://x-access-token:<token>@github.com/dandi-compute/dandi-compute-global-logs /orcd/data/dandi/001/dandi-compute/dandi-compute-global-logs
-chmod 600 /orcd/data/dandi/001/dandi-compute/dandi-compute-global-logs/.git/config
-```
-
-Every push goes through that clone's origin. Since duct samples the command line of every process a step starts, every file and message of a record passes through [`launcher/redact.sed`](launcher/redact.sed) before it is committed, which masks GitHub tokens, `Authorization` headers, credentials in URLs and DANDI API keys, including the one `record.sh` itself runs with wherever it appears. duct's `info.json` also leaves out the `system` and `env` duct records (host, user, OS, SLURM variables), through [`launcher/strip_duct_info.py`](launcher/strip_duct_info.py). Records made before that masking can hold a token, which GitHub's push protection rejects; [`launcher/scrub_global_logs.sh`](launcher/scrub_global_logs.sh) masks every record the shared checkout has not pushed yet, rewriting only the file versions that need it without checking anything out, and the next record pushes them.
 
 ## SLURM limits
 
@@ -70,9 +114,9 @@ mit_preemptable|cpu=1024,gres/gpu=4,mem=4T
 
 
 
-## How to process the queue (manual)
+## How to dispatch job capsules (manual)
 
-Use the [Process queue](https://github.com/dandi-compute/dandi-compute-runner/actions/workflows/process-queue.yml) workflow dispatch.
+Use the [Dispatch job capsules](https://github.com/dandi-compute/dandi-compute-runner/actions/workflows/process-queue.yml) workflow dispatch.
 
 | Input | Description | Default |
 |---|---|---|
@@ -92,7 +136,7 @@ Use the [Create job capsules](https://github.com/dandi-compute/dandi-compute-run
 
 Nextflow pulls each AIND step's container image into `work/apptainer_cache/` the first time a step needs it, inside the capsule's 1 GB driver job. Building a multi-gigabyte image takes far more memory than that, so the pull is killed and the capsule fails before any step runs.
 
-The [Update container images](https://github.com/dandi-compute/dandi-compute-runner/actions/workflows/update-container-images.yml) workflow pulls them ahead of time instead. It works out the image tag of the latest local pipeline version, and when any of its images is not cached yet it runs the pipeline's own `pull_pipeline_images.sh` in a 32 GB job on `mit_normal`. The workflow waits for the job, prints its log, and fails if an image is still missing afterwards. It runs after every [Update codebase](https://github.com/dandi-compute/dandi-compute-runner/actions/workflows/update-codebase.yml) run, since that is when a new pipeline tag arrives, and daily an hour before job capsules are created.
+The [Update container images](https://github.com/dandi-compute/dandi-compute-runner/actions/workflows/update-container-images.yml) workflow pulls them ahead of time instead. It works out the image tag of the latest local pipeline version, and when any of its images is not cached yet it runs the pipeline's own `pull_pipeline_images.sh` in a 32 GB job on `mit_normal`. The workflow waits for the job, prints its log, and fails if an image is still missing afterwards. It runs after every [Update codebase](https://github.com/dandi-compute/dandi-compute-runner/actions/workflows/update-codebase.yml) run, since that is when a new pipeline tag arrives. The daily [`images`](launcher/tasks/images.sh) task makes the same check each morning, an hour before job capsules are created, and submits the same pull without waiting on it.
 
 | Input | Description | Default |
 |---|---|---|
