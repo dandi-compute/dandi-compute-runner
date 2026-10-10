@@ -23,7 +23,7 @@ The repository is kept public to allow anyone to see the runtime logs of the sub
 Every operation on the cluster records itself in the global logs repository,
 [dandi-compute-global-logs](https://github.com/dandi-compute/dandi-compute-global-logs), checked out at `/orcd/data/dandi/001/dandi-compute/dandi-compute-global-logs`. That covers the scheduled tasks, every step of the workflows below, and a `squeue` snapshot every 5 minutes. The logs of job capsules themselves stay with each capsule and go to DANDI with it.
 
-Records land on a branch per day (`YYYY-MM-DD`), under `logs/` for operations and `monitor/` for the snapshots, so old days can be dropped as branches. Each record is a `datalad run` commit, which holds the exact command, where it ran and its exit status. The command's `stdout` and `stderr` are saved beside it, and it runs inside [duct](https://github.com/con/duct), which saves its `info.json` and `usage.jsonl` under `.duct/`. DataLad and duct come from `/orcd/data/dandi/001/environments/name-datalad_env`, which the Update codebase workflow creates when it is missing, or else from the LFP capsules' `name-lfp_environment`.
+Records land on a branch per day and kind, so old days can be dropped as branches and the two kinds update independently: operations on `logs/YYYY-MM-DD` under `logs/{timestamp}-{name}/`, and snapshots on `monitor/YYYY-MM-DD`, grouped by hour under `monitor/{HH}/{timestamp}-{name}/`. Each snapshot also writes its path relative to `monitor/` to `monitor/LATEST`, so the newest one can be looked up without listing `monitor/`. Each kind has its own worktree of the shared checkout (`untracked/worktrees/logs` and `untracked/worktrees/monitor`) and its own lock, so the snapshots and the tasks never wait on each other. Each record is a `datalad run` commit, which holds the exact command, where it ran and its exit status. The command's `stdout` and `stderr` are saved beside it, and it runs inside [duct](https://github.com/con/duct), which saves its `info.json` and `usage.jsonl` under `.duct/`. DataLad and duct come from `/orcd/data/dandi/001/environments/name-datalad_env`, which the Update codebase workflow creates when it is missing, or else from the LFP capsules' `name-lfp_environment`.
 
 [`launcher/record.sh`](launcher/record.sh) does the recording:
 
@@ -142,11 +142,11 @@ The [Update container images](https://github.com/dandi-compute/dandi-compute-run
 |---|---|---|
 | `version` | AIND ephys pipeline release tag whose images to cache. | latest local tag |
 
-To do the same by hand from a cluster shell (the tag is `si-` plus the pipeline's `SPIKEINTERFACE_VERSION`):
+To do the same by hand from a cluster shell, take the tag from the pipeline's `pipeline/capsule_versions.env`. From release 1.4.0 it is the `CONTAINER_TAG` there, and the script is under `scripts/`. Earlier releases tag images `si-` plus their `SPIKEINTERFACE_VERSION` and keep the script at the top level.
 
 ```bash
 cd /orcd/data/dandi/001/dandi-compute
-sbatch --mem=32GB --cpus-per-task=8 --partition=mit_normal --time=04:00:00 --wrap "source /etc/profile.d/modules.sh && module load apptainer && bash aind-ephys-pipeline/pull_pipeline_images.sh --cache $PWD/work/apptainer_cache --tag si-0.104.9"
+sbatch --mem=32GB --cpus-per-task=8 --partition=mit_normal --time=04:00:00 --wrap "source /etc/profile.d/modules.sh && module load apptainer && bash aind-ephys-pipeline/scripts/pull_pipeline_images.sh --cache $PWD/work/apptainer_cache --tag 1.4.0"
 ```
 
 ## How to prepare a specific AIND job (manual)

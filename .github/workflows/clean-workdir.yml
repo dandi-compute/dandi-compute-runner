@@ -16,12 +16,12 @@ env:
 
 jobs:
   CheckEngaging:
-    name: Pre-run Check
+    name: Check runner is online
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Cancel if offline
+      - name: Fail if runner is offline
         uses: ./.github/actions/check-runner
         with:
           labels: mit,engaging,submitter
@@ -48,7 +48,7 @@ jobs:
     needs: [CheckEngaging, CleanWorkDirectory]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Check 24-hour cooldown
         id: cooldown
@@ -56,18 +56,21 @@ jobs:
         with:
           workflow_file: clean-workdir.yml
           token: ${{ github.token }}
+          # Separate step names keep separate cooldowns, so a runner offline email does not
+          # hold back a later email about the workflow itself failing.
+          step_name: ${{ needs.CheckEngaging.result == 'failure' && 'Send runner offline notification' || 'Send email notification on failure' }}
 
-      - name: Send email notification on failure
+      - name: ${{ needs.CheckEngaging.result == 'failure' && 'Send runner offline notification' || 'Send email notification on failure' }}
         if: ${{ steps.cooldown.outputs.should_notify == 'true' }}
-        uses: dawidd6/action-send-mail@94de994a9f6fffee200243214e17002e2920bb59 # v18
+        uses: dawidd6/action-send-mail@67ce3558d613188179559c61d3565140cf389968 # v22
         with:
           server_address: smtp.gmail.com
           server_port: 465
           username: ${{ secrets.MAIL_USERNAME }}
           password: ${{ secrets.MAIL_PASSWORD }}
-          subject: "DANDI Compute: work directory cleanup failed"
+          subject: "${{ needs.CheckEngaging.result == 'failure' && 'DANDI Compute: MIT Engaging runner offline (Clean work directory)' || 'DANDI Compute: work directory cleanup failed' }}"
           to: cody.c.baker.phd@gmail.com  # Add more with comma separation (no spaces)
           from: DANDI Compute <dandi-compute@users.noreply.github.com>
           body: |
-            The cleanup of ./work/ encountered an issue.
+            ${{ needs.CheckEngaging.result == 'failure' && 'The MIT Engaging submitter runner was offline, so this workflow did not run. Restart the runner, then re-run the workflow.' || 'The cleanup of ./work/ encountered an issue.' }}
             Please check status at: https://github.com/dandi-compute/dandi-compute-runner/actions/workflows/clean-workdir.yml
