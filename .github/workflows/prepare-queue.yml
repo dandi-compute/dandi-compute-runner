@@ -10,8 +10,8 @@ on:
         description: "Maximum number of job capsules to create per pipeline."
         required: false
         default: "5"
-  schedule:
-    - cron: '0 0 * * *'
+  # No schedule: launcher/create_github_action_cron.sh starts this from the cluster's login node,
+  # once a day, only when `dandicompute jobs creatable` finds assets waiting for a job capsule.
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}

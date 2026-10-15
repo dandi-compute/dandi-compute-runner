@@ -1,6 +1,9 @@
-# The dispatch trigger and the squeue snapshot record themselves in the global logs repository
+# The workflow triggers and the squeue snapshot record themselves in the global logs repository
 # (/orcd/data/dandi/001/dandi-compute/dandi-compute-global-logs, see launcher/record.sh).
+# Each trigger checks for work from this login node and starts its GitHub workflow only when there
+# is some (see launcher/trigger_github_action_cron.sh).
 */15 * * * * /orcd/data/dandi/001/dandi-compute/dandi-compute-runner/launcher/record.sh logs dispatch-trigger -- /orcd/data/dandi/001/dandi-compute/dandi-compute-runner/launcher/dispatch_github_action_cron.sh > /dev/null 2>&1
+0 0 * * * /orcd/data/dandi/001/dandi-compute/dandi-compute-runner/launcher/record.sh logs create-trigger -- /orcd/data/dandi/001/dandi-compute/dandi-compute-runner/launcher/create_github_action_cron.sh > /dev/null 2>&1
 
 # For whatever reason, this particular job is sensitive to the usage of `/bin/bash -l` in order to 'behave properly'. Otherwise the SLURM job does run, the self-hosted runner is active, but the conda init does not trigger and so no environment is found.
 */1 * * * * /bin/bash -l -c 'flock -n /orcd/data/dandi/001/dandi-compute/flocks/submitter.lock -c "/orcd/data/dandi/001/dandi-compute/dandi-compute-runner/launcher/guarded-submit -N DANDI-Compute-Submitter -- sbatch --output /dev/null --error=/dev/null /orcd/data/dandi/001/dandi-compute/dandi-compute-runner/launcher/launch_submitter.sh" || echo "$(date): lock held, skipping submit"' > /dev/null 2>&1
