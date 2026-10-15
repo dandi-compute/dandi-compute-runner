@@ -84,6 +84,17 @@ Use the [Process queue](https://github.com/dandi-compute/dandi-compute-runner/ac
 
 
 
+## Triggering workflows from the cluster
+
+The workflows that do recurring work have no GitHub schedule. A cron on the login node checks for work first and starts the workflow through `workflow_dispatch` only when there is some, so the runner only runs them when they have something to do. A check that finds nothing sends nothing to GitHub; each check is still recorded in the global logs.
+
+| Workflow | Cron | Started when |
+|---|---|---|
+| [Process AIND Queue](https://github.com/dandi-compute/dandi-compute-runner/actions/workflows/process-queue.yml) | every 15 minutes, [`dispatch_github_action_cron.sh`](launcher/dispatch_github_action_cron.sh) | `dandicompute jobs pending` finds job capsules waiting to be submitted |
+| [Create job capsules](https://github.com/dandi-compute/dandi-compute-runner/actions/workflows/prepare-queue.yml) | daily at midnight (login node time), [`create_github_action_cron.sh`](launcher/create_github_action_cron.sh) | `dandicompute jobs creatable` finds qualifying assets without a job capsule |
+
+Both go through [`launcher/trigger_github_action_cron.sh`](launcher/trigger_github_action_cron.sh). It skips when many jobs are held for maintenance, and fails loudly (rather than skipping) when the check itself fails.
+
 ## How to create job capsules (manual)
 
 Use the [Create job capsules](https://github.com/dandi-compute/dandi-compute-runner/actions/workflows/prepare-queue.yml) workflow dispatch.
