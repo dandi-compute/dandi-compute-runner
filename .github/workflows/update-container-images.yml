@@ -68,23 +68,24 @@ jobs:
           # The latest local tag is what new job capsules are formed against. Its files are read
           # with `git show`, since the shared checkout is on whatever tag the last capsule used.
           TAG="${VERSION:-$(python -c "from dandi_compute_code.queue import PipelineQueue; print(PipelineQueue.resolve_latest_pipeline_version(pipeline='aind+ephys'))")}"
-          if ! VERSIONS=$(git -C "$PIPELINE_DIRECTORY" show "${TAG}:pipeline/capsule_versions.env"); then
-            echo "The pipeline has no pipeline/capsule_versions.env at ${TAG}."
-            exit 1
-          fi
-          # `|| true` since a key the release lacks makes grep fail, which under pipefail would
-          # end the step silently.
-          capsule_version() { grep -E "^$1=" <<< "$VERSIONS" | cut -d= -f2 | tr -d "[:space:]\"'" || true; }
-          # Releases from 1.4.0 name the image tag outright. Earlier ones tag the images by
-          # SpikeInterface version.
-          CONTAINER_TAG=$(capsule_version CONTAINER_TAG)
+          # Releases from 1.4.0 name the image tag in pipeline/pipeline_version.txt (1.4.0 also as
+          # CONTAINER_TAG in pipeline/capsule_versions.env, which 1.4.1 renamed). Earlier ones tag
+          # the images by the SpikeInterface version in pipeline/capsule_versions.env.
+          # `|| true` since a file or key the release lacks makes git or grep fail, which under
+          # pipefail would end the step silently.
+          CONTAINER_TAG=$(git -C "$PIPELINE_DIRECTORY" show "${TAG}:pipeline/pipeline_version.txt" 2> /dev/null | tr -d "[:space:]" || true)
           if [ -z "$CONTAINER_TAG" ]; then
-            SPIKEINTERFACE_VERSION=$(capsule_version SPIKEINTERFACE_VERSION)
-            if [ -z "$SPIKEINTERFACE_VERSION" ]; then
-              echo "Neither CONTAINER_TAG nor SPIKEINTERFACE_VERSION in pipeline/capsule_versions.env at ${TAG}."
-              exit 1
+            VERSIONS=$(git -C "$PIPELINE_DIRECTORY" show "${TAG}:pipeline/capsule_versions.env" 2> /dev/null || true)
+            capsule_version() { grep -E "^$1=" <<< "$VERSIONS" | cut -d= -f2 | tr -d "[:space:]\"'" || true; }
+            CONTAINER_TAG=$(capsule_version CONTAINER_TAG)
+            if [ -z "$CONTAINER_TAG" ]; then
+              SPIKEINTERFACE_VERSION=$(capsule_version SPIKEINTERFACE_VERSION)
+              if [ -z "$SPIKEINTERFACE_VERSION" ]; then
+                echo "Pipeline ${TAG} names no image tag: no pipeline/pipeline_version.txt, and no CONTAINER_TAG or SPIKEINTERFACE_VERSION in pipeline/capsule_versions.env."
+                exit 1
+              fi
+              CONTAINER_TAG="si-${SPIKEINTERFACE_VERSION}"
             fi
-            CONTAINER_TAG="si-${SPIKEINTERFACE_VERSION}"
           fi
           echo "Pipeline ${TAG} uses image tag ${CONTAINER_TAG}"
 
@@ -101,11 +102,16 @@ jobs:
           fi
           printf 'Not cached yet: %s\n' "${missing[@]}"
 
-          SCRIPT_FILE_PATH="$PWD/processing/pull_pipeline_images-${GITHUB_RUN_ID}.sh"
-          # Releases from 1.4.0 keep the script under scripts/.
-          if ! git -C "$PIPELINE_DIRECTORY" show "${TAG}:scripts/pull_pipeline_images.sh" > "$SCRIPT_FILE_PATH" 2> /dev/null \
-            && ! git -C "$PIPELINE_DIRECTORY" show "${TAG}:pull_pipeline_images.sh" > "$SCRIPT_FILE_PATH" 2> /dev/null; then
-            rm -f "$SCRIPT_FILE_PATH"
+          # The whole release is extracted (under 1 MB), since from 1.4.1 the script reads the image
+          # names from environment/images.json beside it. Releases from 1.4.0 keep the script under
+          # scripts/, earlier ones at the top level.
+          RELEASE_DIRECTORY="$PWD/processing/aind-ephys-pipeline-${TAG}-${GITHUB_RUN_ID}"
+          mkdir -p "$RELEASE_DIRECTORY"
+          git -C "$PIPELINE_DIRECTORY" archive "$TAG" | tar -x -C "$RELEASE_DIRECTORY"
+          SCRIPT_FILE_PATH="${RELEASE_DIRECTORY}/scripts/pull_pipeline_images.sh"
+          [ -f "$SCRIPT_FILE_PATH" ] || SCRIPT_FILE_PATH="${RELEASE_DIRECTORY}/pull_pipeline_images.sh"
+          if [ ! -f "$SCRIPT_FILE_PATH" ]; then
+            rm -rf "$RELEASE_DIRECTORY"
             echo "The pipeline has no pull_pipeline_images.sh at ${TAG}."
             exit 1
           fi
@@ -121,7 +127,7 @@ jobs:
             --output="${LOG_DIRECTORY}/job-%j_slurm.log" \
             --wrap "source /etc/profile.d/modules.sh && module load apptainer && bash '${SCRIPT_FILE_PATH}' --cache '${CACHE_DIRECTORY}' --tag '${CONTAINER_TAG}'")
           set -e
-          rm -f "$SCRIPT_FILE_PATH"
+          rm -rf "$RELEASE_DIRECTORY"
 
           job_id="${job_id%%;*}"
           echo "=== Log of job ${job_id} ==="

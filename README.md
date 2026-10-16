@@ -124,11 +124,11 @@ The [Update container images](https://github.com/dandi-compute/dandi-compute-run
 |---|---|---|
 | `version` | AIND ephys pipeline release tag whose images to cache. | latest local tag |
 
-To do the same by hand from a cluster shell, take the tag from the pipeline's `pipeline/capsule_versions.env`. From release 1.4.0 it is the `CONTAINER_TAG` there, and the script is under `scripts/`. Earlier releases tag images `si-` plus their `SPIKEINTERFACE_VERSION` and keep the script at the top level.
+To do the same by hand from a cluster shell, check out the release in `aind-ephys-pipeline` first, since the script reads files beside it (from 1.4.1, the image names in `environment/images.json`, which needs `jq`). From release 1.4.0 the image tag is the release itself, in `pipeline/pipeline_version.txt`, and the script is under `scripts/`. Earlier releases tag images `si-` plus the `SPIKEINTERFACE_VERSION` in `pipeline/capsule_versions.env` and keep the script at the top level.
 
 ```bash
 cd /orcd/data/dandi/001/dandi-compute
-sbatch --mem=32GB --cpus-per-task=8 --partition=mit_normal --time=04:00:00 --wrap "source /etc/profile.d/modules.sh && module load apptainer && bash aind-ephys-pipeline/scripts/pull_pipeline_images.sh --cache $PWD/work/apptainer_cache --tag 1.4.0"
+sbatch --mem=32GB --cpus-per-task=8 --partition=mit_normal --time=04:00:00 --wrap "source /etc/profile.d/modules.sh && module load apptainer && bash aind-ephys-pipeline/scripts/pull_pipeline_images.sh --cache $PWD/work/apptainer_cache --tag 1.4.1"
 ```
 
 ## How to prepare a specific AIND job (manual)
