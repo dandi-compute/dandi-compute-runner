@@ -76,6 +76,16 @@ Every push goes through that clone's origin. Since duct samples the command line
 
 The [Refresh state](https://github.com/dandi-compute/dandi-compute-runner/actions/workflows/refresh-state.yml) workflow rewrites `derivatives/jobs.tsv`, `paths.tsv` and their sidecars in the job capsules (001697) and failed runs archive (001873) Dandisets. It reads only from DANDI and writes only to DANDI, so it runs on a GitHub-hosted runner rather than on the cluster. It runs every hour and after each run of the workflows that change the queue, and uploads only the tables whose content changed. Its Python environment is cached per commit of dandi-compute-core's `main`.
 
+## How to delete failed runs by version (manual)
+
+Use the [Delete failed runs](https://github.com/dandi-compute/dandi-compute-runner/actions/workflows/delete-failed-runs.yml) workflow dispatch. It runs `dandicompute archive delete`, which deletes every capsule of one pipeline version from the failed runs archive (001873) and nothing else. Like Refresh state, it runs on a GitHub-hosted runner with the same cached environment. It only previews by default: the run's summary lists the capsules that would be deleted, and nothing is deleted until you dispatch it again with `preview` cleared. Refresh state runs after it, so the archive's `jobs.tsv` drops the deleted capsules.
+
+| Input | Description | Default |
+|---|---|---|
+| `version` | Pipeline version whose capsules are deleted, with or without the leading `v`. A version without build metadata, such as `v1.3.0`, also selects its builds, such as `v1.3.0+b268fd2`. | _(none)_ |
+| `pipeline` | Delete only the capsules of this pipeline (`aind+ephys` or `lfp`). | `all` |
+| `preview` | Only list the capsules that would be deleted. | `true` |
+
 ## SLURM limits
 
 `sacctmgr show qos format=Name,MaxTRESPU -P | grep '^mit_' | grep -v '|$'`:
@@ -132,11 +142,11 @@ The [Update container images](https://github.com/dandi-compute/dandi-compute-run
 |---|---|---|
 | `version` | AIND ephys pipeline release tag whose images to cache. | latest local tag |
 
-To do the same by hand from a cluster shell, take the tag from the pipeline's `pipeline/capsule_versions.env`. From release 1.4.0 it is the `CONTAINER_TAG` there, and the script is under `scripts/`. Earlier releases tag images `si-` plus their `SPIKEINTERFACE_VERSION` and keep the script at the top level.
+To do the same by hand from a cluster shell, run the script where it sits in the pipeline checkout rather than a copy of it, since from release 1.4.1 it reads the image names from `environment/images.json` beside it (with `jq`). From release 1.4.0 the image tag is the release itself, as in `pipeline/pipeline_version.txt`, and the script is under `scripts/`. Earlier releases tag images `si-` plus the `SPIKEINTERFACE_VERSION` in `pipeline/capsule_versions.env` and keep the script at the top level.
 
 ```bash
 cd /orcd/data/dandi/001/dandi-compute
-sbatch --mem=32GB --cpus-per-task=8 --partition=mit_normal --time=04:00:00 --wrap "source /etc/profile.d/modules.sh && module load apptainer && bash aind-ephys-pipeline/scripts/pull_pipeline_images.sh --cache $PWD/work/apptainer_cache --tag 1.4.0"
+sbatch --mem=32GB --cpus-per-task=8 --partition=mit_normal --time=04:00:00 --wrap "source /etc/profile.d/modules.sh && module load apptainer && bash aind-ephys-pipeline/scripts/pull_pipeline_images.sh --cache $PWD/work/apptainer_cache --tag 1.5.0"
 ```
 
 ## How to prepare a specific AIND job (manual)
