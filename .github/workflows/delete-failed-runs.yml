@@ -1,0 +1,127 @@
+name: Delete failed runs
+
+# Deletes every capsule of one pipeline version from the failed runs archive Dandiset (001873)
+# through `dandicompute delete`. It reads only from DANDI and deletes only on DANDI, so it runs on
+# a GitHub-hosted runner and never needs the cluster or the self-hosted runner. Refresh state runs
+# after it, which drops the deleted capsules from the archive's jobs.tsv.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Pipeline version whose capsules are deleted, such as `v1.3.0`. A version without build metadata also selects its builds, such as `v1.3.0+b268fd2`."
+        required: true
+        type: string
+      pipeline:
+        description: "Delete only the capsules of this pipeline."
+        required: true
+        type: choice
+        default: all
+        options:
+          - all
+          - aind+ephys
+          - lfp
+      preview:
+        description: "Only list the capsules that would be deleted. Clear it to delete them."
+        required: true
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  DANDI_API_KEY: ${{ secrets.DANDI_API_KEY }}
+  DANDI_DEVEL: ${{ secrets.DANDI_DEVEL }}
+
+jobs:
+  DeleteFailedRuns:
+    name: Delete failed runs
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        id: python
+        with:
+          python-version: "3.13"
+
+      # The same cached environment as Refresh state: per commit of dandi-compute-core's main and
+      # per exact Python version (the venv links to that interpreter).
+      - name: Resolve dandi-compute-core
+        id: core
+        run: echo "sha=$(git ls-remote https://github.com/dandi-compute/dandi-compute-core refs/heads/main | cut -f1)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore the dandi-compute environment
+        id: environment
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/dandi-compute-env
+          key: dandi-compute-env-${{ runner.os }}-py${{ steps.python.outputs.python-version }}-${{ steps.core.outputs.sha }}
+          restore-keys: dandi-compute-env-${{ runner.os }}-py${{ steps.python.outputs.python-version }}-
+
+      - name: Install dandi-compute-core
+        if: ${{ steps.environment.outputs.cache-hit != 'true' }}
+        run: |
+          python -m venv ~/dandi-compute-env
+          ~/dandi-compute-env/bin/pip install --upgrade "dandi-compute-code @ git+https://github.com/dandi-compute/dandi-compute-core@${{ steps.core.outputs.sha }}"
+
+      - name: ${{ inputs.preview && 'Preview failed runs to delete' || 'Delete failed runs' }}
+        shell: bash
+        env:
+          VERSION: ${{ inputs.version }}
+          PIPELINE: ${{ inputs.pipeline }}
+          PREVIEW: ${{ inputs.preview }}
+        run: |
+          source ~/dandi-compute-env/bin/activate
+          ARGS=(--version "$VERSION")
+          if [ "$PIPELINE" != "all" ]; then
+            ARGS+=(--pipeline "$PIPELINE")
+          fi
+          if [ "$PREVIEW" = "true" ]; then
+            ARGS+=(--preview)
+          fi
+          dandicompute delete "${ARGS[@]}" | tee "$RUNNER_TEMP/delete.txt"
+          {
+            if [ "$PREVIEW" = "true" ]; then
+              echo "### Preview: nothing was deleted"
+            else
+              echo "### Deleted from the failed runs archive"
+            fi
+            echo '```'
+            cat "$RUNNER_TEMP/delete.txt"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  NotifyOnFailure:
+    if: ${{ always() && failure() }}  # 'always' for if any 'needs' are cancelled/skipped
+    needs: [DeleteFailedRuns]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Check 24-hour cooldown
+        id: cooldown
+        uses: ./.github/actions/check-cooldown
+        with:
+          workflow_file: delete-failed-runs.yml
+          token: ${{ github.token }}
+
+      - name: Send email notification on failure
+        if: ${{ steps.cooldown.outputs.should_notify == 'true' }}
+        uses: dawidd6/action-send-mail@67ce3558d613188179559c61d3565140cf389968 # v22
+        with:
+          server_address: smtp.gmail.com
+          server_port: 465
+          username: ${{ secrets.MAIL_USERNAME }}
+          password: ${{ secrets.MAIL_PASSWORD }}
+          subject: "DANDI Compute: deleting failed runs failed"
+          to: cody.c.baker.phd@gmail.com  # Add more with comma separation (no spaces)
+          from: DANDI Compute <dandi-compute@users.noreply.github.com>
+          body: |
+            The manual dispatch deleting failed runs from the failed runs archive (001873) encountered an issue!
+            Please check status at: https://github.com/dandi-compute/dandi-compute-runner/actions/workflows/delete-failed-runs.yml

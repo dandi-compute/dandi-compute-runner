@@ -76,6 +76,16 @@ Every push goes through that clone's origin. Since duct samples the command line
 
 The [Refresh state](https://github.com/dandi-compute/dandi-compute-runner/actions/workflows/refresh-state.yml) workflow rewrites `derivatives/jobs.tsv`, `paths.tsv` and their sidecars in the job capsules (001697) and failed runs archive (001873) Dandisets. It reads only from DANDI and writes only to DANDI, so it runs on a GitHub-hosted runner rather than on the cluster. It runs every hour and after each run of the workflows that change the queue, and uploads only the tables whose content changed. Its Python environment is cached per commit of dandi-compute-core's `main`.
 
+## How to delete failed runs by version (manual)
+
+Use the [Delete failed runs](https://github.com/dandi-compute/dandi-compute-runner/actions/workflows/delete-failed-runs.yml) workflow dispatch. It runs `dandicompute delete`, which deletes every capsule of one pipeline version from the failed runs archive (001873) and nothing else. Like Refresh state, it runs on a GitHub-hosted runner with the same cached environment. It only previews by default: the run's summary lists the capsules that would be deleted, and nothing is deleted until you dispatch it again with `preview` cleared. Refresh state runs after it, so the archive's `jobs.tsv` drops the deleted capsules.
+
+| Input | Description | Default |
+|---|---|---|
+| `version` | Pipeline version whose capsules are deleted, with or without the leading `v`. A version without build metadata, such as `v1.3.0`, also selects its builds, such as `v1.3.0+b268fd2`. | _(none)_ |
+| `pipeline` | Delete only the capsules of this pipeline (`aind+ephys` or `lfp`). | `all` |
+| `preview` | Only list the capsules that would be deleted. | `true` |
+
 ## SLURM limits
 
 `sacctmgr show qos format=Name,MaxTRESPU -P | grep '^mit_' | grep -v '|$'`:
