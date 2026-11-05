@@ -128,6 +128,10 @@ Use the [Create job capsules](https://github.com/dandi-compute/dandi-compute-run
 |---|---|---|
 | `limit` | Maximum number of job capsules to create per pipeline. | `5` |
 
+## The AIND Nextflow environment
+
+AIND job capsules run Nextflow from a conda environment on the cluster, which dandi-compute-core names in each capsule's `submit.sh`. The [Update codebase](https://github.com/dandi-compute/dandi-compute-runner/actions/workflows/update-codebase.yml) workflow provisions it at `/orcd/data/dandi/001/environments/name-nextflow_version-25+10+4_environment` when it is missing, with Nextflow 25.10.4 and the DANDI CLI. AIND ephys pipeline 1.5.0 needs Nextflow 25.10 or later for the `nf-schema` plugin it validates its parameters with. The workflow also installs that plugin into `~/.nextflow/plugins`, so capsules that start together do not all download it. Capsules formed before this environment keep the older `name-nextflow_environment` their `submit.sh` names.
+
 ## How AIND container images are cached
 
 Nextflow pulls each AIND step's container image into `work/apptainer_cache/` the first time a step needs it, inside the capsule's 1 GB driver job. Building a multi-gigabyte image takes far more memory than that, so the pull is killed and the capsule fails before any step runs.
