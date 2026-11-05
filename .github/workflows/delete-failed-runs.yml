@@ -1,9 +1,9 @@
 name: Delete failed runs
 
 # Deletes every capsule of one pipeline version from the failed runs archive Dandiset (001873)
-# through `dandicompute delete`. It reads only from DANDI and deletes only on DANDI, so it runs on
-# a GitHub-hosted runner and never needs the cluster or the self-hosted runner. Refresh state runs
-# after it, which drops the deleted capsules from the archive's jobs.tsv.
+# through `dandicompute archive delete`. It reads only from DANDI and deletes only on DANDI, so
+# it runs on a GitHub-hosted runner and never needs the cluster or the self-hosted runner. Refresh
+# state runs after it, which drops the deleted capsules from the archive's jobs.tsv.
 
 on:
   workflow_dispatch:
@@ -85,7 +85,7 @@ jobs:
           if [ "$PREVIEW" = "true" ]; then
             ARGS+=(--preview)
           fi
-          dandicompute delete "${ARGS[@]}" | tee "$RUNNER_TEMP/delete.txt"
+          dandicompute archive delete "${ARGS[@]}" | tee "$RUNNER_TEMP/delete.txt"
           {
             if [ "$PREVIEW" = "true" ]; then
               echo "### Preview: nothing was deleted"

@@ -78,7 +78,7 @@ The [Refresh state](https://github.com/dandi-compute/dandi-compute-runner/action
 
 ## How to delete failed runs by version (manual)
 
-Use the [Delete failed runs](https://github.com/dandi-compute/dandi-compute-runner/actions/workflows/delete-failed-runs.yml) workflow dispatch. It runs `dandicompute delete`, which deletes every capsule of one pipeline version from the failed runs archive (001873) and nothing else. Like Refresh state, it runs on a GitHub-hosted runner with the same cached environment. It only previews by default: the run's summary lists the capsules that would be deleted, and nothing is deleted until you dispatch it again with `preview` cleared. Refresh state runs after it, so the archive's `jobs.tsv` drops the deleted capsules.
+Use the [Delete failed runs](https://github.com/dandi-compute/dandi-compute-runner/actions/workflows/delete-failed-runs.yml) workflow dispatch. It runs `dandicompute archive delete`, which deletes every capsule of one pipeline version from the failed runs archive (001873) and nothing else. Like Refresh state, it runs on a GitHub-hosted runner with the same cached environment. It only previews by default: the run's summary lists the capsules that would be deleted, and nothing is deleted until you dispatch it again with `preview` cleared. Refresh state runs after it, so the archive's `jobs.tsv` drops the deleted capsules.
 
 | Input | Description | Default |
 |---|---|---|
