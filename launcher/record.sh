@@ -11,7 +11,8 @@
 # (KIND/YYYY-MM-DD) of the global logs repository, a DataLad dataset checked out at
 # $LOG_REPOSITORY, and is pushed to GitHub. A monitor record goes in
 # monitor/{HH}/{YYYYMMDDTHHMMSS}-NAME/ instead, and writes that path, relative to monitor/, to
-# monitor/LATEST, so the newest snapshot can be looked up without listing monitor/. The command
+# monitor/LATEST, so the newest snapshot can be looked up without listing monitor/; once its day's
+# branch is on GitHub, the persistent monitor/latest branch's LATEST names that branch. The command
 # runs under `datalad run`, inside duct when it is available, in a throwaway clone, so the shared
 # checkout is locked only while the finished record is moved onto its branch, and then only its
 # worktree for KIND, so the kinds never wait on each other. The command runs in the directory record.sh
@@ -373,9 +374,41 @@ move_onto_shared_branch() {
     if ! git -C "$WORKTREE" merge-base --is-ancestor "$BRANCH" "refs/remotes/origin/$BRANCH" 2> /dev/null; then
         show_git_error
         note "could not push $BRANCH from the shared checkout; it stays there for the next push"
+    elif [ "$KIND" = monitor ]; then
+        point_latest_at_day "$WORKTREE" origin
     fi
     clean_up_day_branches
     return 0
+}
+
+# monitor/latest, a branch that is never deleted, holds one file, LATEST, naming the newest
+# monitor/YYYY-MM-DD branch on GitHub, so the newest snapshot can be found even when today has no
+# branch: just after midnight, or after the monitor has been down for days. Each monitor record
+# points it at its own day once that day's branch is on GitHub. Only the day's first delivery
+# changes anything; every other one sees from the copy kept in origin/monitor/latest that it
+# already names the day, without asking GitHub. It only ever moves forward, so a record of an
+# earlier day delivered late leaves it be. Runs in REPOSITORY, pushing to REMOTE.
+POINTER_BRANCH=monitor/latest
+point_latest_at_day() {
+    local repository="$1" remote="$2" tracking="refs/remotes/origin/$POINTER_BRANCH"
+    local named blob tree commit parent=()
+    named=$(git -C "$repository" cat-file -p "$tracking:LATEST" 2> /dev/null)
+    [ "$named" = "$BRANCH" ] && return 0
+    # The copy kept is behind or missing, so GitHub's may name this day already, or a later one.
+    # A pointer branch GitHub does not have yet is made afresh.
+    git -C "$repository" fetch -q "$remote" "+refs/heads/$POINTER_BRANCH:$tracking" 2> /dev/null
+    named=$(git -C "$repository" cat-file -p "$tracking:LATEST" 2> /dev/null)
+    [[ "$named" =~ ^monitor/[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] && [[ ! "$named" < "$BRANCH" ]] && return 0
+    git -C "$repository" rev-parse -q --verify "$tracking^{commit}" > /dev/null && parent=(-p "$tracking")
+    blob=$(echo "$BRANCH" | git -C "$repository" hash-object -w --stdin) \
+        && tree=$(printf '100644 blob %s\tLATEST\n' "$blob" | git -C "$repository" mktree) \
+        && commit=$(git -C "$repository" commit-tree "$tree" "${parent[@]}" -m "[DANDI Compute] point $POINTER_BRANCH at $BRANCH") \
+        && git -C "$repository" push -q "$remote" "$commit:refs/heads/$POINTER_BRANCH" 2>> "$NOTES" \
+        && git -C "$repository" update-ref "$tracking" "$commit" \
+        && return 0
+    show_git_error
+    note "could not point $POINTER_BRANCH at $BRANCH; the next snapshot tries again"
+    return 1
 }
 
 # Records parked by either kind are committed under recovered/ by whichever delivers next. The
@@ -422,7 +455,10 @@ deliver_directly() {
         if git -C "$CLONE" fetch -q "$url" "$BRANCH" 2>> "$NOTES"; then
             git -C "$CLONE" rebase -q -X theirs FETCH_HEAD 2>> "$NOTES" || { git -C "$CLONE" rebase --abort; note "could not rebase onto GitHub's $BRANCH"; }
         fi
-        git -C "$CLONE" push -q "$url" "HEAD:refs/heads/$BRANCH" 2>> "$NOTES" && return 0
+        if git -C "$CLONE" push -q "$url" "HEAD:refs/heads/$BRANCH" 2>> "$NOTES"; then
+            [ "$KIND" = monitor ] && point_latest_at_day "$CLONE" "$url"
+            return 0
+        fi
         declined_by_rule && break
         sleep $((attempt * 5))
     done
