@@ -81,7 +81,7 @@ jobs:
               echo "::error::Provide a job capsule \`path\`, or choose a \`status\` and/or \`pipeline\` to archive."
               exit 1
             fi
-            dandicompute archive --job "$CAPSULE_PATH" --base /orcd/data/dandi/001/dandi-compute
+            dandicompute archive add --job "$CAPSULE_PATH" --base /orcd/data/dandi/001/dandi-compute
           else
             if [ -n "$CAPSULE_PATH" ]; then
               echo "::error::\`path\` must be empty when archiving by \`status\` ($STATUS) or \`pipeline\` ($PIPELINE)."
@@ -94,7 +94,7 @@ jobs:
             if [ "$PIPELINE" != "all" ]; then
               FILTERS+=(--pipeline "$PIPELINE")
             fi
-            dandicompute archive "${FILTERS[@]}" --base /orcd/data/dandi/001/dandi-compute
+            dandicompute archive add "${FILTERS[@]}" --base /orcd/data/dandi/001/dandi-compute
           fi
 
   NotifyOnFailure:
