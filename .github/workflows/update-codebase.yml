@@ -97,6 +97,35 @@ jobs:
           "$DATALAD_ENVIRONMENT/bin/datalad" --version
           "$DATALAD_ENVIRONMENT/bin/con-duct" --version
 
+      # AIND capsules run Nextflow from the environment dandi-compute-core names for them. AIND
+      # ephys pipeline 1.5.0 needs Nextflow 25.10 or later for its nf-schema plugin. The plugin is
+      # installed here once, so capsules starting together do not all download it into ~/.nextflow.
+      - name: Provision Nextflow environment
+        env:
+          NEXTFLOW_ENVIRONMENT: /orcd/data/dandi/001/environments/name-nextflow_version-25+10+4_environment
+          NEXTFLOW_VERSION: 25.10.4
+          NF_SCHEMA_PLUGIN: nf-schema@2.7.3
+        run: |
+          if ! command -v conda > /dev/null; then
+            source /etc/profile.d/modules.sh
+            module load miniforge
+          fi
+          # `conda run` activates the environment, which is what points Nextflow at its own Java.
+          INSTALLED=$(conda run -p "$NEXTFLOW_ENVIRONMENT" nextflow -version 2> /dev/null || true)
+          if grep -q "version ${NEXTFLOW_VERSION} " <<< "$INSTALLED"; then
+            echo "Nextflow ${NEXTFLOW_VERSION} is already in $NEXTFLOW_ENVIRONMENT."
+          else
+            if [ -d "$NEXTFLOW_ENVIRONMENT/conda-meta" ]; then
+              conda install -y -p "$NEXTFLOW_ENVIRONMENT" -c conda-forge -c bioconda --override-channels "nextflow=${NEXTFLOW_VERSION}" python pip
+            else
+              conda create -y -p "$NEXTFLOW_ENVIRONMENT" -c conda-forge -c bioconda --override-channels "nextflow=${NEXTFLOW_VERSION}" python pip
+            fi
+            # Each capsule upgrades the DANDI CLI itself before uploading.
+            "$NEXTFLOW_ENVIRONMENT/bin/pip" install dandi
+          fi
+          conda run -p "$NEXTFLOW_ENVIRONMENT" nextflow -version
+          conda run -p "$NEXTFLOW_ENVIRONMENT" nextflow plugin install "$NF_SCHEMA_PLUGIN"
+
       - name: Reinstall package
         if: ${{ inputs.reinstall }}
         working-directory: /orcd/data/dandi/001/dandi-compute
