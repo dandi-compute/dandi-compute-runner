@@ -40,7 +40,11 @@ The repository is kept public to allow anyone to see the runtime logs of the sub
 
 The cluster's periodic cleanup can wipe the user crontab on the login node. That stops every entry in it, including the one that relaunches the runner (which runs as a 12-hour Slurm job), so the runner goes offline at its next time limit and the cluster triggers stop.
 
-[`launcher/install_crontab.sh`](launcher/install_crontab.sh) reinstalls `launcher/crontab` over ssh on the login node whenever the installed crontab differs from it. Two things run it:
+```
+source /orcd/data/dandi/001/dandi-compute/dandi-compute-runner/launcher/install_crontab.sh
+```
+
+[`launcher/install_crontab.sh`](launcher/install_crontab.sh) reinstalls `launcher/crontab` whenever the existing crontab differs from it. Two things run it:
 
 - The [Refresh crontab](https://github.com/dandi-compute/dandi-compute-runner/actions/workflows/refresh-crontab.yml) workflow, every hour on the runner. Its schedule is on GitHub, so it still runs when the crontab is gone. While the runner is offline it sends the runner offline email instead (at most once a day).
 - [`launcher/revive.sh`](launcher/revive.sh), a Slurm job that resubmits itself every hour.
