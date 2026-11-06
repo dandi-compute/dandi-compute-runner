@@ -11,8 +11,9 @@
 # (KIND/YYYY-MM-DD) of the global logs repository, a DataLad dataset checked out at
 # $LOG_REPOSITORY, and is pushed to GitHub. A monitor record goes in
 # monitor/{HH}/{YYYYMMDDTHHMMSS}-NAME/ instead, and writes that path, relative to monitor/, to
-# monitor/LATEST, so the newest snapshot can be looked up without listing monitor/; once its day's
-# branch is on GitHub, the persistent monitor/latest branch's LATEST names that branch. The command
+# monitor/LATEST and monitor/LATEST-NAME, so the newest snapshot, of any name or of its own, can be
+# looked up without listing monitor/; once its day's branch is on GitHub, the persistent
+# monitor/latest branch's LATEST names that branch. The command
 # runs under `datalad run`, inside duct when it is available, in a throwaway clone, so the shared
 # checkout is locked only while the finished record is moved onto its branch, and then only its
 # worktree for KIND, so the kinds never wait on each other. The command runs in the directory record.sh
@@ -58,16 +59,18 @@ DATE=$(date +%F)
 BRANCH="$KIND/$DATE"
 TIMESTAMP=$(date +%Y%m%dT%H%M%S)
 # Monitor snapshots, one every 5 minutes, are grouped by hour (monitor/HH/...) so that no directory
-# grows too long to browse. LATEST holds the newest one's path relative to monitor/.
+# grows too long to browse. LATEST holds the newest one's path relative to monitor/, and LATEST-NAME
+# the newest one's of each name (squeue, disk), since the names are snapshotted at different rates.
 if [ "$KIND" = monitor ]; then
     RECORD_NAME="${TIMESTAMP:9:2}/$TIMESTAMP-$NAME"
 else
     RECORD_NAME="$TIMESTAMP-$NAME"
 fi
 OUTPUT_PATH="$KIND/$RECORD_NAME"
-# What the record commits: its directory, and for a monitor snapshot monitor/LATEST naming it.
+# What the record commits: its directory, and for a monitor snapshot monitor/LATEST and
+# monitor/LATEST-NAME naming it.
 RECORD_PATHS=("$OUTPUT_PATH")
-[ "$KIND" = monitor ] && RECORD_PATHS+=("$KIND/LATEST")
+[ "$KIND" = monitor ] && RECORD_PATHS+=("$KIND/LATEST" "$KIND/LATEST-$NAME")
 export DANDI_COMPUTE_RECORDED=1
 
 WORK_DIRECTORY=$(mktemp -d "${TMPDIR:-/tmp}/dandi-compute-record-XXXXXX") || WORK_DIRECTORY=""
@@ -280,9 +283,10 @@ commit_pending() {
 
 # --- deliver the record ---------------------------------------------------------------------
 
-# Records never touch each other's files, so the only file two of them can conflict on is
-# monitor/LATEST. Every rebase and cherry-pick below settles it with `-X theirs`, for the record
-# being moved; should that leave an older snapshot named, the next snapshot names itself.
+# Records never touch each other's files, so the only files two of them can conflict on are
+# monitor/LATEST and, between snapshots of one name, monitor/LATEST-NAME. Every rebase and
+# cherry-pick below settles them with `-X theirs`, for the record being moved; should that leave an
+# older snapshot named, the next snapshot names itself.
 
 # Each kind delivers through its own worktree of the shared checkout, under its own lock, so the
 # snapshots every 5 minutes never wait on a task's delivery nor it on theirs. The worktrees live in
@@ -487,7 +491,10 @@ main() {
     fi
     CLONE_START=$(git -C "$CLONE" rev-parse -q --verify HEAD || true)
     mkdir -p "$CLONE/$OUTPUT_PATH"
-    [ "$KIND" = monitor ] && echo "$RECORD_NAME" > "$CLONE/$KIND/LATEST"
+    if [ "$KIND" = monitor ]; then
+        echo "$RECORD_NAME" > "$CLONE/$KIND/LATEST"
+        echo "$RECORD_NAME" > "$CLONE/$KIND/LATEST-$NAME"
+    fi
     keep_step_script "$@"
 
     run_with_datalad "$@" || run_without_datalad "$@"
