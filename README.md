@@ -79,15 +79,16 @@ Every push goes through that clone's origin. Since duct samples the command line
 
 The [Refresh state](https://github.com/dandi-compute/dandi-compute-runner/actions/workflows/refresh-state.yml) workflow rewrites `derivatives/jobs.tsv`, `paths.tsv` and their sidecars in the job capsules (001697) and failed runs archive (001873) Dandisets. It reads only from DANDI and writes only to DANDI, so it runs on a GitHub-hosted runner rather than on the cluster. It runs every hour and after each run of the workflows that change the queue, and uploads only the tables whose content changed. Its Python environment is cached per commit of dandi-compute-core's `main`.
 
-## How to delete failed runs by version (manual)
+## How to delete failed runs (manual)
 
-Use the [Delete failed runs](https://github.com/dandi-compute/dandi-compute-runner/actions/workflows/delete-failed-runs.yml) workflow dispatch. It runs `dandicompute archive delete`, which deletes every capsule of one pipeline version from the failed runs archive (001873) and nothing else. Like Refresh state, it runs on a GitHub-hosted runner with the same cached environment. It only previews by default: the run's summary lists the capsules that would be deleted, and nothing is deleted until you dispatch it again with `preview` cleared. Refresh state runs after it, so the archive's `jobs.tsv` drops the deleted capsules.
+Use the [Delete failed runs](https://github.com/dandi-compute/dandi-compute-runner/actions/workflows/delete-failed-runs.yml) workflow dispatch. It runs `dandicompute archive delete`, which deletes from the failed runs archive (001873) and nothing else. Select either one capsule by its `job` ID, or every capsule of one pipeline version with `version` and `pipeline` together. A version must always be paired with its pipeline, so one version number cannot clobber the capsules of every pipeline that shares it. Like Refresh state, it runs on a GitHub-hosted runner with the same cached environment. It only previews by default: the run's summary lists the capsules that would be deleted along with the provenance of each (job ID, status, source asset, pipeline, exact version, params, config and codebase), and nothing is deleted until you dispatch it again with `preview` cleared. Refresh state runs after it, so the archive's `jobs.tsv` drops the deleted capsules.
 
 | Input | Description | Default |
 |---|---|---|
-| `version` | Pipeline version whose capsules are deleted, with or without the leading `v`. A version without build metadata, such as `v1.3.0`, also selects its builds, such as `v1.3.0+b268fd2`. | _(none)_ |
-| `pipeline` | Delete only the capsules of this pipeline (`aind+ephys` or `lfp`). | `all` |
-| `preview` | Only list the capsules that would be deleted. | `true` |
+| `job` | Job ID of the one capsule to delete, such as `job-260916a1b2c3`. Leave `version` empty and `pipeline` as `none` with it. | _(none)_ |
+| `version` | Pipeline version whose capsules are deleted, with or without the leading `v`. A version without build metadata, such as `v1.3.0`, also selects its builds, such as `v1.3.0+b268fd2`. Requires `pipeline`. | _(none)_ |
+| `pipeline` | The pipeline whose capsules of `version` are deleted (`aind+ephys` or `lfp`). Required with `version`. | `none` |
+| `preview` | Only list the capsules that would be deleted, with the provenance of each. | `true` |
 
 ## SLURM limits
 
@@ -154,25 +155,16 @@ sbatch --mem=32GB --cpus-per-task=8 --partition=mit_normal --time=04:00:00 --wra
 
 ## How to prepare a specific AIND job (manual)
 
-Use one of the dedicated workflow dispatches:
+To prepare one specific asset, run `dandicompute prepare aind` from a cluster shell with `DANDI_API_KEY` set. Name the asset by `--id`, or by `--dandiset` and `--dandipath`. `--version` is required, `--params` and `--config` default to `default`, and `--submit` submits the job once it is prepared.
 
-- [Prepare AIND job](https://github.com/dandi-compute/dandi-compute-runner/actions/workflows/prepare-aind.yml) for non-test preparation.
-- [Prepare AIND test job](https://github.com/dandi-compute/dandi-compute-runner/actions/workflows/prepare-aind-test.yml) for test preparation.
-
-### Prepare AIND job (non-test)
-
-| Input | Description | Default |
-|---|---|---|
-| `id` | Content ID to process (required unless `dandiset` and `dandipath` are provided). | _(none)_ |
-| `dandiset` | Dandiset ID (required unless `id` is provided). | _(none)_ |
-| `dandipath` | Local Dandiset path (required unless `id` is provided). | _(none)_ |
-| `config` | Registered configuration key. | `default` |
-| `version` | Pipeline version. | _(none)_ |
-| `params` | Parameters key. | `default` |
-| `submit` | Automatically submit after preparation. | `false` |
-| `silent` | Suppress output messages. | `false` |
+```bash
+cd /orcd/data/dandi/001/dandi-compute
+dandicompute prepare aind --base /orcd/data/dandi/001/dandi-compute --id <content-id> --version <pipeline-version>
+```
 
 ### Prepare AIND test job
+
+The [Prepare AIND test job](https://github.com/dandi-compute/dandi-compute-runner/actions/workflows/prepare-aind-test.yml) workflow prepares the job capsule for the test asset.
 
 | Input | Description | Default |
 |---|---|---|
