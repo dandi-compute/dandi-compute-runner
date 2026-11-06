@@ -4,15 +4,16 @@
 #
 # Usage: record.sh KIND NAME -- COMMAND [ARGS...]
 #
-#   KIND     `logs` for tasks and workflow steps, `monitor` for monitor snapshots
+#   KIND     `logs` for tasks and workflow steps; `monitor` for queue snapshots and `disk` for
+#            disk usage snapshots, the snapshot kinds
 #   NAME     a short name for the operation, used in the record's directory name
 #
 # The record lands in KIND/{YYYYMMDDTHHMMSS}-NAME/ on the day's branch for its kind
 # (KIND/YYYY-MM-DD) of the global logs repository, a DataLad dataset checked out at
-# $LOG_REPOSITORY, and is pushed to GitHub. A monitor record goes in
-# monitor/{HH}/{YYYYMMDDTHHMMSS}-NAME/ instead, and writes that path, relative to monitor/, to
-# monitor/LATEST, so the newest snapshot can be looked up without listing monitor/; once its day's
-# branch is on GitHub, the persistent monitor/latest branch's LATEST names that branch. The command
+# $LOG_REPOSITORY, and is pushed to GitHub. A snapshot goes in KIND/{HH}/{YYYYMMDDTHHMMSS}-NAME/
+# instead, and writes that path, relative to KIND/, to KIND/LATEST, so the newest snapshot can be
+# looked up without listing KIND/; once its day's branch is on GitHub, the persistent KIND/latest
+# branch's LATEST names that branch. The command
 # runs under `datalad run`, inside duct when it is available, in a throwaway clone, so the shared
 # checkout is locked only while the finished record is moved onto its branch, and then only its
 # worktree for KIND, so the kinds never wait on each other. The command runs in the directory record.sh
@@ -26,6 +27,9 @@
 #     broken, the record is pushed from the throwaway clone straight to GitHub;
 #   - when GitHub cannot be reached either, the record is parked in untracked/unpushed/ in the
 #     shared checkout, and the next delivery that gets through commits it under recovered/.
+#
+# The day branches are ephemeral: once a day, each kind deletes from GitHub its day branches older
+# than DAY_BRANCH_RETENTION_DAYS (see clean_up_day_branches). main and monitor/latest stay.
 #
 # Commands run through record.sh see DANDI_COMPUTE_RECORDED=1, which is how the task scripts
 # know not to wrap themselves a second time.
@@ -42,6 +46,8 @@ DATALAD_ENVIRONMENTS=(
 )
 RUNNER_REPOSITORY=/orcd/data/dandi/001/dandi-compute/dandi-compute-runner
 LOCK_TIMEOUT_SECONDS=900
+# How many days a day's branch stays on GitHub before it is deleted.
+DAY_BRANCH_RETENTION_DAYS=30
 
 if [ "$#" -lt 4 ] || [ "$3" != "--" ]; then
     echo "usage: record.sh KIND NAME -- COMMAND [ARGS...]" >&2
@@ -57,17 +63,21 @@ DATE=$(date +%F)
 # workflow steps never rebase onto or race each other's pushes.
 BRANCH="$KIND/$DATE"
 TIMESTAMP=$(date +%Y%m%dT%H%M%S)
-# Monitor snapshots, one every 5 minutes, are grouped by hour (monitor/HH/...) so that no directory
-# grows too long to browse. LATEST holds the newest one's path relative to monitor/.
-if [ "$KIND" = monitor ]; then
+# Snapshots (the monitor and disk kinds), taken every few minutes, are grouped by hour (KIND/HH/...)
+# so that no directory grows too long to browse. LATEST holds the newest one's path relative to KIND/.
+SNAPSHOT=""
+case "$KIND" in
+    monitor | disk) SNAPSHOT=1 ;;
+esac
+if [ -n "$SNAPSHOT" ]; then
     RECORD_NAME="${TIMESTAMP:9:2}/$TIMESTAMP-$NAME"
 else
     RECORD_NAME="$TIMESTAMP-$NAME"
 fi
 OUTPUT_PATH="$KIND/$RECORD_NAME"
-# What the record commits: its directory, and for a monitor snapshot monitor/LATEST naming it.
+# What the record commits: its directory, and for a snapshot KIND/LATEST naming it.
 RECORD_PATHS=("$OUTPUT_PATH")
-[ "$KIND" = monitor ] && RECORD_PATHS+=("$KIND/LATEST")
+[ -n "$SNAPSHOT" ] && RECORD_PATHS+=("$KIND/LATEST")
 export DANDI_COMPUTE_RECORDED=1
 
 WORK_DIRECTORY=$(mktemp -d "${TMPDIR:-/tmp}/dandi-compute-record-XXXXXX") || WORK_DIRECTORY=""
@@ -280,9 +290,9 @@ commit_pending() {
 
 # --- deliver the record ---------------------------------------------------------------------
 
-# Records never touch each other's files, so the only file two of them can conflict on is
-# monitor/LATEST. Every rebase and cherry-pick below settles it with `-X theirs`, for the record
-# being moved; should that leave an older snapshot named, the next snapshot names itself.
+# Records never touch each other's files, so the only file two of them can conflict on is a
+# snapshot kind's LATEST. Every rebase and cherry-pick below settles it with `-X theirs`, for the
+# record being moved; should that leave an older snapshot named, the next snapshot names itself.
 
 # Each kind delivers through its own worktree of the shared checkout, under its own lock, so the
 # snapshots every 5 minutes never wait on a task's delivery nor it on theirs. The worktrees live in
@@ -374,21 +384,21 @@ move_onto_shared_branch() {
     if ! git -C "$WORKTREE" merge-base --is-ancestor "$BRANCH" "refs/remotes/origin/$BRANCH" 2> /dev/null; then
         show_git_error
         note "could not push $BRANCH from the shared checkout; it stays there for the next push"
-    elif [ "$KIND" = monitor ]; then
+    elif [ -n "$SNAPSHOT" ]; then
         point_latest_at_day "$WORKTREE" origin
     fi
     clean_up_day_branches
     return 0
 }
 
-# monitor/latest, a branch that is never deleted, holds one file, LATEST, naming the newest
-# monitor/YYYY-MM-DD branch on GitHub, so the newest snapshot can be found even when today has no
-# branch: just after midnight, or after the monitor has been down for days. Each monitor record
-# points it at its own day once that day's branch is on GitHub. Only the day's first delivery
-# changes anything; every other one sees from the copy kept in origin/monitor/latest that it
+# KIND/latest (monitor/latest, disk/latest), a branch that is never deleted, holds one file, LATEST,
+# naming the newest KIND/YYYY-MM-DD branch on GitHub, so the newest snapshot can be found even when
+# today has no branch: just after midnight, or after the snapshots have been down for days. Each
+# snapshot points it at its own day once that day's branch is on GitHub. Only the day's first
+# delivery changes anything; every other one sees from the copy kept in origin/KIND/latest that it
 # already names the day, without asking GitHub. It only ever moves forward, so a record of an
 # earlier day delivered late leaves it be. Runs in REPOSITORY, pushing to REMOTE.
-POINTER_BRANCH=monitor/latest
+POINTER_BRANCH="$KIND/latest"
 point_latest_at_day() {
     local repository="$1" remote="$2" tracking="refs/remotes/origin/$POINTER_BRANCH"
     local named blob tree commit parent=()
@@ -398,7 +408,7 @@ point_latest_at_day() {
     # A pointer branch GitHub does not have yet is made afresh.
     git -C "$repository" fetch -q "$remote" "+refs/heads/$POINTER_BRANCH:$tracking" 2> /dev/null
     named=$(git -C "$repository" cat-file -p "$tracking:LATEST" 2> /dev/null)
-    [[ "$named" =~ ^monitor/[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] && [[ ! "$named" < "$BRANCH" ]] && return 0
+    [[ "$named" =~ ^"$KIND"/[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] && [[ ! "$named" < "$BRANCH" ]] && return 0
     git -C "$repository" rev-parse -q --verify "$tracking^{commit}" > /dev/null && parent=(-p "$tracking")
     blob=$(echo "$BRANCH" | git -C "$repository" hash-object -w --stdin) \
         && tree=$(printf '100644 blob %s\tLATEST\n' "$blob" | git -C "$repository" mktree) \
@@ -430,21 +440,56 @@ recover_parked() {
 # Earlier days' branches of this kind in the shared checkout are pushed if GitHub lacks any of
 # their records, then deleted once GitHub has them all; one that cannot be pushed stays for the
 # next delivery. The logs deliveries do the same for the undivided YYYY-MM-DD branches from before
-# the kinds were split. Afterwards, branches deleted on GitHub are dropped from origin/ as well.
+# the kinds were split. The day branches are ephemeral: one older than DAY_BRANCH_RETENTION_DAYS
+# is deleted from GitHub (once a day for each kind, see prune_expired_day_branches), and in the
+# shared checkout is deleted without being pushed, since GitHub would only delete it again.
+# Afterwards, branches deleted on GitHub are dropped from origin/ as well.
 DAY_BRANCH_PATTERNS=("refs/heads/$KIND/[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]")
 [ "$KIND" = logs ] && DAY_BRANCH_PATTERNS+=('refs/heads/[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]')
+# The first day still kept: a day branch is expired when its day sorts before this one.
+RETENTION_CUTOFF=$(date -d "$DAY_BRANCH_RETENTION_DAYS days ago" +%F 2> /dev/null || echo 0000-00-00)
+# Whether BRANCH-NAME is a day branch of this kind (see DAY_BRANCH_PATTERNS) older than the retention.
+expired_day_branch() {
+    local day="${1##*/}"
+    [[ "$1" == "$KIND/"[0-9]* ]] || { [ "$KIND" = logs ] && [[ "$1" != */* ]]; } || return 1
+    [[ "$day" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] && [[ "$day" < "$RETENTION_CUTOFF" ]]
+}
 clean_up_day_branches() {
     local branch
     git -C "$LOG_REPOSITORY" for-each-ref --format='%(refname:short)' "${DAY_BRANCH_PATTERNS[@]}" \
         | while read -r branch; do
             [ "$branch" = "$BRANCH" ] && continue
-            if ! git -C "$LOG_REPOSITORY" merge-base --is-ancestor "$branch" "refs/remotes/origin/$branch" 2> /dev/null; then
+            if ! expired_day_branch "$branch" \
+                && ! git -C "$LOG_REPOSITORY" merge-base --is-ancestor "$branch" "refs/remotes/origin/$branch" 2> /dev/null; then
                 git -C "$LOG_REPOSITORY" push -q origin "$branch" 2>> "$NOTES" \
                     || { show_git_error; note "could not push $branch from the shared checkout; it stays there for the next push"; continue; }
             fi
             git -C "$LOG_REPOSITORY" branch -q -D "$branch" 2>> "$NOTES"
         done
+    prune_expired_day_branches
     git -C "$LOG_REPOSITORY" remote prune origin > /dev/null 2>> "$NOTES"
+}
+
+# Delete from GitHub this kind's day branches older than the retention. GitHub's branches are
+# listed, and the expired ones deleted, by the first delivery of each day (the marker file in
+# untracked/ names the day this last succeeded); a day whose deletion fails is tried again by the
+# day's next delivery. Only day branches are ever deleted: main and monitor/latest are not.
+prune_expired_day_branches() {
+    local marker="$LOG_REPOSITORY/untracked/pruned-$KIND" heads expired=() branch
+    [ "$(cat "$marker" 2> /dev/null)" = "$DATE" ] && return 0
+    heads=$(git -C "$LOG_REPOSITORY" ls-remote --heads origin 2>> "$NOTES") \
+        || { show_git_error; note "could not list GitHub's branches to delete the expired ones; the next delivery tries again"; return 1; }
+    while read -r _ branch; do
+        branch="${branch#refs/heads/}"
+        [ -n "$branch" ] && [ "$branch" != "$BRANCH" ] && expired_day_branch "$branch" && expired+=("$branch")
+    done <<< "$heads"
+    if [ "${#expired[@]}" -gt 0 ]; then
+        git -C "$LOG_REPOSITORY" push -q origin --delete "${expired[@]}" 2>> "$NOTES" \
+            || { show_git_error; note "could not delete the expired day branches from GitHub (${expired[*]}); the next delivery tries again"; return 1; }
+        note "deleted from GitHub the day branches older than $DAY_BRANCH_RETENTION_DAYS days: ${expired[*]}"
+    fi
+    mkdir -p "$(dirname "$marker")" && echo "$DATE" > "$marker"
+    return 0
 }
 
 # Push the clone's commits straight to the day's branch on GitHub.
@@ -456,7 +501,7 @@ deliver_directly() {
             git -C "$CLONE" rebase -q -X theirs FETCH_HEAD 2>> "$NOTES" || { git -C "$CLONE" rebase --abort; note "could not rebase onto GitHub's $BRANCH"; }
         fi
         if git -C "$CLONE" push -q "$url" "HEAD:refs/heads/$BRANCH" 2>> "$NOTES"; then
-            [ "$KIND" = monitor ] && point_latest_at_day "$CLONE" "$url"
+            [ -n "$SNAPSHOT" ] && point_latest_at_day "$CLONE" "$url"
             return 0
         fi
         declined_by_rule && break
@@ -487,7 +532,7 @@ main() {
     fi
     CLONE_START=$(git -C "$CLONE" rev-parse -q --verify HEAD || true)
     mkdir -p "$CLONE/$OUTPUT_PATH"
-    [ "$KIND" = monitor ] && echo "$RECORD_NAME" > "$CLONE/$KIND/LATEST"
+    [ -n "$SNAPSHOT" ] && echo "$RECORD_NAME" > "$CLONE/$KIND/LATEST"
     keep_step_script "$@"
 
     run_with_datalad "$@" || run_without_datalad "$@"
