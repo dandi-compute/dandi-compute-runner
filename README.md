@@ -152,25 +152,16 @@ sbatch --mem=32GB --cpus-per-task=8 --partition=mit_normal --time=04:00:00 --wra
 
 ## How to prepare a specific AIND job (manual)
 
-Use one of the dedicated workflow dispatches:
+To prepare one specific asset, run `dandicompute prepare aind` from a cluster shell with `DANDI_API_KEY` set. Name the asset by `--id`, or by `--dandiset` and `--dandipath`. `--version` is required, `--params` and `--config` default to `default`, and `--submit` submits the job once it is prepared.
 
-- [Prepare AIND job](https://github.com/dandi-compute/dandi-compute-runner/actions/workflows/prepare-aind.yml) for non-test preparation.
-- [Prepare AIND test job](https://github.com/dandi-compute/dandi-compute-runner/actions/workflows/prepare-aind-test.yml) for test preparation.
-
-### Prepare AIND job (non-test)
-
-| Input | Description | Default |
-|---|---|---|
-| `id` | Content ID to process (required unless `dandiset` and `dandipath` are provided). | _(none)_ |
-| `dandiset` | Dandiset ID (required unless `id` is provided). | _(none)_ |
-| `dandipath` | Local Dandiset path (required unless `id` is provided). | _(none)_ |
-| `config` | Registered configuration key. | `default` |
-| `version` | Pipeline version. | _(none)_ |
-| `params` | Parameters key. | `default` |
-| `submit` | Automatically submit after preparation. | `false` |
-| `silent` | Suppress output messages. | `false` |
+```bash
+cd /orcd/data/dandi/001/dandi-compute
+dandicompute prepare aind --base /orcd/data/dandi/001/dandi-compute --id <content-id> --version <pipeline-version>
+```
 
 ### Prepare AIND test job
+
+The [Prepare AIND test job](https://github.com/dandi-compute/dandi-compute-runner/actions/workflows/prepare-aind-test.yml) workflow prepares the job capsule for the test asset.
 
 | Input | Description | Default |
 |---|---|---|
