@@ -1,6 +1,8 @@
 #!/bin/bash
 #SBATCH --job-name=DANDI-Compute-Submitter
-#SBATCH --mem=1GB
+# Every workflow step on this runner runs inside this job, beside the runner itself and the
+# DataLad and duct of launcher/record.sh. Creating job capsules alone peaks above 500 MB.
+#SBATCH --mem=4GB
 #SBATCH --cpus-per-task 1
 #SBATCH --partition=mit_preemptable
 #SBATCH --time=12:00:00
