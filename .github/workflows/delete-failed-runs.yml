@@ -1,28 +1,33 @@
 name: Delete failed runs
 
-# Deletes every capsule of one pipeline version from the failed runs archive Dandiset (001873)
-# through `dandicompute archive delete`. It reads only from DANDI and deletes only on DANDI, so
-# it runs on a GitHub-hosted runner and never needs the cluster or the self-hosted runner. Refresh
-# state runs after it, which drops the deleted capsules from the archive's jobs.tsv.
+# Deletes one capsule by job ID, or every capsule of one pipeline's version, from the failed runs
+# archive Dandiset (001873) through `dandicompute archive delete`. It reads only from DANDI and
+# deletes only on DANDI, so it runs on a GitHub-hosted runner and never needs the cluster or the
+# self-hosted runner. Refresh state runs after it, which drops the deleted capsules from the
+# archive's jobs.tsv.
 
 on:
   workflow_dispatch:
     inputs:
+      job:
+        description: "Job ID of the one capsule to delete, such as `job-260916a1b2c3`. Leave `version` and `pipeline` alone with it."
+        required: false
+        type: string
       version:
-        description: "Pipeline version whose capsules are deleted, such as `v1.3.0`. A version without build metadata also selects its builds, such as `v1.3.0+b268fd2`."
-        required: true
+        description: "Pipeline version whose capsules are deleted, such as `v1.3.0`. A version without build metadata also selects its builds, such as `v1.3.0+b268fd2`. Requires `pipeline`."
+        required: false
         type: string
       pipeline:
-        description: "Delete only the capsules of this pipeline."
+        description: "The pipeline whose capsules of `version` are deleted. Required with `version`."
         required: true
         type: choice
-        default: all
+        default: none
         options:
-          - all
+          - none
           - aind+ephys
           - lfp
       preview:
-        description: "Only list the capsules that would be deleted. Clear it to delete them."
+        description: "Only list the capsules that would be deleted, with the provenance of each. Clear it to delete them."
         required: true
         type: boolean
         default: true
@@ -73,19 +78,36 @@ jobs:
       - name: ${{ inputs.preview && 'Preview failed runs to delete' || 'Delete failed runs' }}
         shell: bash
         env:
+          JOB: ${{ inputs.job }}
           VERSION: ${{ inputs.version }}
           PIPELINE: ${{ inputs.pipeline }}
           PREVIEW: ${{ inputs.preview }}
         run: |
           source ~/dandi-compute-env/bin/activate
-          ARGS=(--version "$VERSION")
-          if [ "$PIPELINE" != "all" ]; then
-            ARGS+=(--pipeline "$PIPELINE")
+          if [ -n "$JOB" ]; then
+            if [ -n "$VERSION" ] || [ "$PIPELINE" != "none" ]; then
+              echo "::error::Leave \`version\` empty and \`pipeline\` as \`none\` when deleting by \`job\` ($JOB)."
+              exit 1
+            fi
+            ARGS=(--job "$JOB")
+          else
+            if [ -z "$VERSION" ] || [ "$PIPELINE" = "none" ]; then
+              echo "::error::Provide a \`job\` ID, or both a \`version\` and its \`pipeline\`. A version alone would clobber every pipeline sharing it."
+              exit 1
+            fi
+            ARGS=(--version "$VERSION" --pipeline "$PIPELINE")
           fi
           if [ "$PREVIEW" = "true" ]; then
             ARGS+=(--preview)
           fi
           dandicompute archive delete "${ARGS[@]}" | tee "$RUNNER_TEMP/delete.txt"
+          # A real run also prints the progress table of every `dandi delete` call, which pushed the
+          # first one past the 1 MB step summary limit. The step log keeps all of it; the summary
+          # keeps only the command's closing report, which starts at the line counting the capsules.
+          sed -n '/^\(Deleted\|Would delete\|No \).* job capsules\?/,$p' "$RUNNER_TEMP/delete.txt" > "$RUNNER_TEMP/report.txt"
+          if [ ! -s "$RUNNER_TEMP/report.txt" ]; then
+            tail -c 200000 "$RUNNER_TEMP/delete.txt" > "$RUNNER_TEMP/report.txt"
+          fi
           {
             if [ "$PREVIEW" = "true" ]; then
               echo "### Preview: nothing was deleted"
@@ -93,7 +115,11 @@ jobs:
               echo "### Deleted from the failed runs archive"
             fi
             echo '```'
-            cat "$RUNNER_TEMP/delete.txt"
+            head -c 900000 "$RUNNER_TEMP/report.txt"
+            if [ "$(wc -c < "$RUNNER_TEMP/report.txt")" -gt 900000 ]; then
+              echo
+              echo "... truncated to fit the 1 MB summary limit; the step log has the full list."
+            fi
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 

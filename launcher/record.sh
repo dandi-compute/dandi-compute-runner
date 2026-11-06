@@ -28,6 +28,9 @@
 #   - when GitHub cannot be reached either, the record is parked in untracked/unpushed/ in the
 #     shared checkout, and the next delivery that gets through commits it under recovered/.
 #
+# The day branches are ephemeral: once a day, each kind deletes from GitHub its day branches older
+# than DAY_BRANCH_RETENTION_DAYS (see clean_up_day_branches). main and monitor/latest stay.
+#
 # Commands run through record.sh see DANDI_COMPUTE_RECORDED=1, which is how the task scripts
 # know not to wrap themselves a second time.
 
@@ -43,6 +46,8 @@ DATALAD_ENVIRONMENTS=(
 )
 RUNNER_REPOSITORY=/orcd/data/dandi/001/dandi-compute/dandi-compute-runner
 LOCK_TIMEOUT_SECONDS=900
+# How many days a day's branch stays on GitHub before it is deleted.
+DAY_BRANCH_RETENTION_DAYS=30
 
 if [ "$#" -lt 4 ] || [ "$3" != "--" ]; then
     echo "usage: record.sh KIND NAME -- COMMAND [ARGS...]" >&2
@@ -435,21 +440,56 @@ recover_parked() {
 # Earlier days' branches of this kind in the shared checkout are pushed if GitHub lacks any of
 # their records, then deleted once GitHub has them all; one that cannot be pushed stays for the
 # next delivery. The logs deliveries do the same for the undivided YYYY-MM-DD branches from before
-# the kinds were split. Afterwards, branches deleted on GitHub are dropped from origin/ as well.
+# the kinds were split. The day branches are ephemeral: one older than DAY_BRANCH_RETENTION_DAYS
+# is deleted from GitHub (once a day for each kind, see prune_expired_day_branches), and in the
+# shared checkout is deleted without being pushed, since GitHub would only delete it again.
+# Afterwards, branches deleted on GitHub are dropped from origin/ as well.
 DAY_BRANCH_PATTERNS=("refs/heads/$KIND/[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]")
 [ "$KIND" = logs ] && DAY_BRANCH_PATTERNS+=('refs/heads/[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]')
+# The first day still kept: a day branch is expired when its day sorts before this one.
+RETENTION_CUTOFF=$(date -d "$DAY_BRANCH_RETENTION_DAYS days ago" +%F 2> /dev/null || echo 0000-00-00)
+# Whether BRANCH-NAME is a day branch of this kind (see DAY_BRANCH_PATTERNS) older than the retention.
+expired_day_branch() {
+    local day="${1##*/}"
+    [[ "$1" == "$KIND/"[0-9]* ]] || { [ "$KIND" = logs ] && [[ "$1" != */* ]]; } || return 1
+    [[ "$day" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] && [[ "$day" < "$RETENTION_CUTOFF" ]]
+}
 clean_up_day_branches() {
     local branch
     git -C "$LOG_REPOSITORY" for-each-ref --format='%(refname:short)' "${DAY_BRANCH_PATTERNS[@]}" \
         | while read -r branch; do
             [ "$branch" = "$BRANCH" ] && continue
-            if ! git -C "$LOG_REPOSITORY" merge-base --is-ancestor "$branch" "refs/remotes/origin/$branch" 2> /dev/null; then
+            if ! expired_day_branch "$branch" \
+                && ! git -C "$LOG_REPOSITORY" merge-base --is-ancestor "$branch" "refs/remotes/origin/$branch" 2> /dev/null; then
                 git -C "$LOG_REPOSITORY" push -q origin "$branch" 2>> "$NOTES" \
                     || { show_git_error; note "could not push $branch from the shared checkout; it stays there for the next push"; continue; }
             fi
             git -C "$LOG_REPOSITORY" branch -q -D "$branch" 2>> "$NOTES"
         done
+    prune_expired_day_branches
     git -C "$LOG_REPOSITORY" remote prune origin > /dev/null 2>> "$NOTES"
+}
+
+# Delete from GitHub this kind's day branches older than the retention. GitHub's branches are
+# listed, and the expired ones deleted, by the first delivery of each day (the marker file in
+# untracked/ names the day this last succeeded); a day whose deletion fails is tried again by the
+# day's next delivery. Only day branches are ever deleted: main and monitor/latest are not.
+prune_expired_day_branches() {
+    local marker="$LOG_REPOSITORY/untracked/pruned-$KIND" heads expired=() branch
+    [ "$(cat "$marker" 2> /dev/null)" = "$DATE" ] && return 0
+    heads=$(git -C "$LOG_REPOSITORY" ls-remote --heads origin 2>> "$NOTES") \
+        || { show_git_error; note "could not list GitHub's branches to delete the expired ones; the next delivery tries again"; return 1; }
+    while read -r _ branch; do
+        branch="${branch#refs/heads/}"
+        [ -n "$branch" ] && [ "$branch" != "$BRANCH" ] && expired_day_branch "$branch" && expired+=("$branch")
+    done <<< "$heads"
+    if [ "${#expired[@]}" -gt 0 ]; then
+        git -C "$LOG_REPOSITORY" push -q origin --delete "${expired[@]}" 2>> "$NOTES" \
+            || { show_git_error; note "could not delete the expired day branches from GitHub (${expired[*]}); the next delivery tries again"; return 1; }
+        note "deleted from GitHub the day branches older than $DAY_BRANCH_RETENTION_DAYS days: ${expired[*]}"
+    fi
+    mkdir -p "$(dirname "$marker")" && echo "$DATE" > "$marker"
+    return 0
 }
 
 # Push the clone's commits straight to the day's branch on GitHub.

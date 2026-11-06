@@ -36,6 +36,8 @@ The repository is kept public to allow anyone to see the runtime logs of the sub
 
    That file is the only copy of the crontab. It replaces the whole user crontab, including the backup jobs it also lists. It is reinstalled automatically (see [Keeping the crontab installed](#keeping-the-crontab-installed)), so change the file rather than the live crontab.
 
+The runner itself runs as a 12-hour Slurm job on `mit_preemptable` with 4 GB of memory ([`launcher/launch_submitter.sh`](launcher/launch_submitter.sh)). Every step of the workflows on this runner runs inside that job and shares its memory with the runner and with the DataLad and duct that record the step. A step that goes over it is killed with exit code 137. A change to the job's resources takes effect when the runner is next relaunched. To apply one sooner, cancel the `DANDI-Compute-Submitter` job while no workflow is running on it, and cron resubmits it within a minute.
+
 ## Keeping the crontab installed
 
 The cluster's periodic cleanup can wipe the user crontab on the login node. That stops every entry in it, including the one that relaunches the runner (which runs as a 12-hour Slurm job), so the runner goes offline at its next time limit and the cluster triggers stop.
@@ -61,6 +63,7 @@ Everything that runs on the cluster outside a job capsule is recorded in
 - Each record is a `datalad run` commit holding the exact command, its directory and its exit status. The command's `stdout` and `stderr` are saved beside it, and it runs inside duct, which saves its `info.json` and `usage.jsonl` under `.duct/`. DataLad and duct come from `/orcd/data/dandi/001/environments/name-datalad_env`, which the Update codebase workflow creates when it is missing, or else from the LFP capsules' `name-lfp_environment`; without either the command is recorded with plain git.
 - The record is made in a throwaway clone and then moved onto the day's branch in the shared checkout's worktree for its kind (`untracked/worktrees/logs`, `untracked/worktrees/monitor` or `untracked/worktrees/disk`), which is locked only for that move and the push. Each kind has its own worktree and lock, so the snapshots and the tasks never wait on each other.
 - Recording never stops the work: the command always runs, its exit status is passed through, and anything that went wrong is pushed in the record's `record.log`. If the shared checkout is busy or broken, the record is pushed straight to GitHub. If GitHub cannot be reached, it is kept in `untracked/unpushed/` and delivered with the next record.
+- The day branches are ephemeral: each kind's first delivery of the day deletes from GitHub its day branches older than 30 days (`DAY_BRANCH_RETENTION_DAYS` in `record.sh`), and notes which in that record's `record.log`. A day branch the shared checkout could not push for that long is dropped as well. `main` and `monitor/latest` are never deleted; when `monitor/latest` names a deleted day, the dashboard falls back to listing the `monitor/` branches.
 - Workflow steps are recorded through each self-hosted job's `defaults.run.shell`, which also keeps the step's script and the run's URL. That shell starts in plain bash and hands the step to `record.sh` only when it is on the machine, so a checkout that predates `record.sh` still runs every step (unrecorded) and the Update codebase workflow can bring it in.
 
 To set it up, clone the repository with a token that can push to it (contents: write) in its URL:
@@ -76,15 +79,16 @@ Every push goes through that clone's origin. Since duct samples the command line
 
 The [Refresh state](https://github.com/dandi-compute/dandi-compute-runner/actions/workflows/refresh-state.yml) workflow rewrites `derivatives/jobs.tsv`, `paths.tsv` and their sidecars in the job capsules (001697) and failed runs archive (001873) Dandisets. It reads only from DANDI and writes only to DANDI, so it runs on a GitHub-hosted runner rather than on the cluster. It runs every hour and after each run of the workflows that change the queue, and uploads only the tables whose content changed. Its Python environment is cached per commit of dandi-compute-core's `main`.
 
-## How to delete failed runs by version (manual)
+## How to delete failed runs (manual)
 
-Use the [Delete failed runs](https://github.com/dandi-compute/dandi-compute-runner/actions/workflows/delete-failed-runs.yml) workflow dispatch. It runs `dandicompute archive delete`, which deletes every capsule of one pipeline version from the failed runs archive (001873) and nothing else. Like Refresh state, it runs on a GitHub-hosted runner with the same cached environment. It only previews by default: the run's summary lists the capsules that would be deleted, and nothing is deleted until you dispatch it again with `preview` cleared. Refresh state runs after it, so the archive's `jobs.tsv` drops the deleted capsules.
+Use the [Delete failed runs](https://github.com/dandi-compute/dandi-compute-runner/actions/workflows/delete-failed-runs.yml) workflow dispatch. It runs `dandicompute archive delete`, which deletes from the failed runs archive (001873) and nothing else. Select either one capsule by its `job` ID, or every capsule of one pipeline version with `version` and `pipeline` together. A version must always be paired with its pipeline, so one version number cannot clobber the capsules of every pipeline that shares it. Like Refresh state, it runs on a GitHub-hosted runner with the same cached environment. It only previews by default: the run's summary lists the capsules that would be deleted along with the provenance of each (job ID, status, source asset, pipeline, exact version, params, config and codebase), and nothing is deleted until you dispatch it again with `preview` cleared. Refresh state runs after it, so the archive's `jobs.tsv` drops the deleted capsules.
 
 | Input | Description | Default |
 |---|---|---|
-| `version` | Pipeline version whose capsules are deleted, with or without the leading `v`. A version without build metadata, such as `v1.3.0`, also selects its builds, such as `v1.3.0+b268fd2`. | _(none)_ |
-| `pipeline` | Delete only the capsules of this pipeline (`aind+ephys` or `lfp`). | `all` |
-| `preview` | Only list the capsules that would be deleted. | `true` |
+| `job` | Job ID of the one capsule to delete, such as `job-260916a1b2c3`. Leave `version` empty and `pipeline` as `none` with it. | _(none)_ |
+| `version` | Pipeline version whose capsules are deleted, with or without the leading `v`. A version without build metadata, such as `v1.3.0`, also selects its builds, such as `v1.3.0+b268fd2`. Requires `pipeline`. | _(none)_ |
+| `pipeline` | The pipeline whose capsules of `version` are deleted (`aind+ephys` or `lfp`). Required with `version`. | `none` |
+| `preview` | Only list the capsules that would be deleted, with the provenance of each. | `true` |
 
 ## SLURM limits
 
@@ -151,25 +155,16 @@ sbatch --mem=32GB --cpus-per-task=8 --partition=mit_normal --time=04:00:00 --wra
 
 ## How to prepare a specific AIND job (manual)
 
-Use one of the dedicated workflow dispatches:
+To prepare one specific asset, run `dandicompute prepare aind` from a cluster shell with `DANDI_API_KEY` set. Name the asset by `--id`, or by `--dandiset` and `--dandipath`. `--version` is required, `--params` and `--config` default to `default`, and `--submit` submits the job once it is prepared.
 
-- [Prepare AIND job](https://github.com/dandi-compute/dandi-compute-runner/actions/workflows/prepare-aind.yml) for non-test preparation.
-- [Prepare AIND test job](https://github.com/dandi-compute/dandi-compute-runner/actions/workflows/prepare-aind-test.yml) for test preparation.
-
-### Prepare AIND job (non-test)
-
-| Input | Description | Default |
-|---|---|---|
-| `id` | Content ID to process (required unless `dandiset` and `dandipath` are provided). | _(none)_ |
-| `dandiset` | Dandiset ID (required unless `id` is provided). | _(none)_ |
-| `dandipath` | Local Dandiset path (required unless `id` is provided). | _(none)_ |
-| `config` | Registered configuration key. | `default` |
-| `version` | Pipeline version. | _(none)_ |
-| `params` | Parameters key. | `default` |
-| `submit` | Automatically submit after preparation. | `false` |
-| `silent` | Suppress output messages. | `false` |
+```bash
+cd /orcd/data/dandi/001/dandi-compute
+dandicompute prepare aind --base /orcd/data/dandi/001/dandi-compute --id <content-id> --version <pipeline-version>
+```
 
 ### Prepare AIND test job
+
+The [Prepare AIND test job](https://github.com/dandi-compute/dandi-compute-runner/actions/workflows/prepare-aind-test.yml) workflow prepares the job capsule for the test asset.
 
 | Input | Description | Default |
 |---|---|---|
