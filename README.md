@@ -36,6 +36,8 @@ The repository is kept public to allow anyone to see the runtime logs of the sub
 
    That file is the only copy of the crontab. It replaces the whole user crontab, including the backup jobs it also lists. It is reinstalled automatically (see [Keeping the crontab installed](#keeping-the-crontab-installed)), so change the file rather than the live crontab.
 
+The runner itself runs as a 12-hour Slurm job on `mit_preemptable` with 4 GB of memory ([`launcher/launch_submitter.sh`](launcher/launch_submitter.sh)). Every step of the workflows on this runner runs inside that job and shares its memory with the runner and with the DataLad and duct that record the step. A step that goes over it is killed with exit code 137. A change to the job's resources takes effect when the runner is next relaunched. To apply one sooner, cancel the `DANDI-Compute-Submitter` job while no workflow is running on it, and cron resubmits it within a minute.
+
 ## Keeping the crontab installed
 
 The cluster's periodic cleanup can wipe the user crontab on the login node. That stops every entry in it, including the one that relaunches the runner (which runs as a 12-hour Slurm job), so the runner goes offline at its next time limit and the cluster triggers stop.
