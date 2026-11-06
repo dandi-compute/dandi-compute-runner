@@ -1,9 +1,10 @@
 #!/bin/bash
 #
-# Record a snapshot of disk usage in the global logs repository, under monitor/ on the day's
-# branch beside the squeue snapshots (see launcher/record.sh). Run by the crontab on the login
-# node every 30 minutes; the Status page of dandi-compute-page shows the newest one. Day branches
-# are ephemeral, so the snapshots never pile up anywhere that matters.
+# Record a snapshot of disk usage in the global logs repository, under disk/ on the day's
+# disk/YYYY-MM-DD branch, the way monitor.sh records the queue under monitor/ (see
+# launcher/record.sh). Run by the crontab on the login node every 30 minutes; the Status page of
+# dandi-compute-page shows the newest one. Day branches are ephemeral, so the snapshots never pile
+# up anywhere that matters.
 #
 # The snapshot is `df` for the filesystems of the home directory and the DANDI project
 # directories, then how much the home directory itself holds (`du`), which `df` cannot show:
@@ -11,7 +12,7 @@
 #
 # Run on its own it records itself; record.sh runs it again, recorded, for the snapshot.
 if [ -z "${DANDI_COMPUTE_RECORDED:-}" ]; then
-    exec /orcd/data/dandi/001/dandi-compute/dandi-compute-runner/launcher/record.sh monitor disk -- "$0"
+    exec /orcd/data/dandi/001/dandi-compute/dandi-compute-runner/launcher/record.sh disk usage -- "$0"
 fi
 
 set -uo pipefail

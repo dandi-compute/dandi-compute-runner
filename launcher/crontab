@@ -11,7 +11,7 @@
 # A squeue snapshot every 5 minutes, recorded under monitor/ (see launcher/monitor.sh).
 */5 * * * * /bin/bash -l -c '/orcd/data/dandi/001/dandi-compute/dandi-compute-runner/launcher/monitor.sh' > /dev/null 2>&1
 
-# A disk usage snapshot every 30 minutes, recorded under monitor/ (see launcher/disk.sh).
+# A disk usage snapshot every 30 minutes, recorded under disk/ (see launcher/disk.sh).
 */30 * * * * /bin/bash -l -c '/orcd/data/dandi/001/dandi-compute/dandi-compute-runner/launcher/disk.sh' > /dev/null 2>&1
 
 # Backup processes

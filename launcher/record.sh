@@ -4,16 +4,16 @@
 #
 # Usage: record.sh KIND NAME -- COMMAND [ARGS...]
 #
-#   KIND     `logs` for tasks and workflow steps, `monitor` for monitor snapshots
+#   KIND     `logs` for tasks and workflow steps; `monitor` for queue snapshots and `disk` for
+#            disk usage snapshots, the snapshot kinds
 #   NAME     a short name for the operation, used in the record's directory name
 #
 # The record lands in KIND/{YYYYMMDDTHHMMSS}-NAME/ on the day's branch for its kind
 # (KIND/YYYY-MM-DD) of the global logs repository, a DataLad dataset checked out at
-# $LOG_REPOSITORY, and is pushed to GitHub. A monitor record goes in
-# monitor/{HH}/{YYYYMMDDTHHMMSS}-NAME/ instead, and writes that path, relative to monitor/, to
-# monitor/LATEST and monitor/LATEST-NAME, so the newest snapshot, of any name or of its own, can be
-# looked up without listing monitor/; once its day's branch is on GitHub, the persistent
-# monitor/latest branch's LATEST names that branch. The command
+# $LOG_REPOSITORY, and is pushed to GitHub. A snapshot goes in KIND/{HH}/{YYYYMMDDTHHMMSS}-NAME/
+# instead, and writes that path, relative to KIND/, to KIND/LATEST, so the newest snapshot can be
+# looked up without listing KIND/; once its day's branch is on GitHub, the persistent KIND/latest
+# branch's LATEST names that branch. The command
 # runs under `datalad run`, inside duct when it is available, in a throwaway clone, so the shared
 # checkout is locked only while the finished record is moved onto its branch, and then only its
 # worktree for KIND, so the kinds never wait on each other. The command runs in the directory record.sh
@@ -58,19 +58,21 @@ DATE=$(date +%F)
 # workflow steps never rebase onto or race each other's pushes.
 BRANCH="$KIND/$DATE"
 TIMESTAMP=$(date +%Y%m%dT%H%M%S)
-# Monitor snapshots, one every 5 minutes, are grouped by hour (monitor/HH/...) so that no directory
-# grows too long to browse. LATEST holds the newest one's path relative to monitor/, and LATEST-NAME
-# the newest one's of each name (squeue, disk), since the names are snapshotted at different rates.
-if [ "$KIND" = monitor ]; then
+# Snapshots (the monitor and disk kinds), taken every few minutes, are grouped by hour (KIND/HH/...)
+# so that no directory grows too long to browse. LATEST holds the newest one's path relative to KIND/.
+SNAPSHOT=""
+case "$KIND" in
+    monitor | disk) SNAPSHOT=1 ;;
+esac
+if [ -n "$SNAPSHOT" ]; then
     RECORD_NAME="${TIMESTAMP:9:2}/$TIMESTAMP-$NAME"
 else
     RECORD_NAME="$TIMESTAMP-$NAME"
 fi
 OUTPUT_PATH="$KIND/$RECORD_NAME"
-# What the record commits: its directory, and for a monitor snapshot monitor/LATEST and
-# monitor/LATEST-NAME naming it.
+# What the record commits: its directory, and for a snapshot KIND/LATEST naming it.
 RECORD_PATHS=("$OUTPUT_PATH")
-[ "$KIND" = monitor ] && RECORD_PATHS+=("$KIND/LATEST" "$KIND/LATEST-$NAME")
+[ -n "$SNAPSHOT" ] && RECORD_PATHS+=("$KIND/LATEST")
 export DANDI_COMPUTE_RECORDED=1
 
 WORK_DIRECTORY=$(mktemp -d "${TMPDIR:-/tmp}/dandi-compute-record-XXXXXX") || WORK_DIRECTORY=""
@@ -283,10 +285,9 @@ commit_pending() {
 
 # --- deliver the record ---------------------------------------------------------------------
 
-# Records never touch each other's files, so the only files two of them can conflict on are
-# monitor/LATEST and, between snapshots of one name, monitor/LATEST-NAME. Every rebase and
-# cherry-pick below settles them with `-X theirs`, for the record being moved; should that leave an
-# older snapshot named, the next snapshot names itself.
+# Records never touch each other's files, so the only file two of them can conflict on is a
+# snapshot kind's LATEST. Every rebase and cherry-pick below settles it with `-X theirs`, for the
+# record being moved; should that leave an older snapshot named, the next snapshot names itself.
 
 # Each kind delivers through its own worktree of the shared checkout, under its own lock, so the
 # snapshots every 5 minutes never wait on a task's delivery nor it on theirs. The worktrees live in
@@ -378,21 +379,21 @@ move_onto_shared_branch() {
     if ! git -C "$WORKTREE" merge-base --is-ancestor "$BRANCH" "refs/remotes/origin/$BRANCH" 2> /dev/null; then
         show_git_error
         note "could not push $BRANCH from the shared checkout; it stays there for the next push"
-    elif [ "$KIND" = monitor ]; then
+    elif [ -n "$SNAPSHOT" ]; then
         point_latest_at_day "$WORKTREE" origin
     fi
     clean_up_day_branches
     return 0
 }
 
-# monitor/latest, a branch that is never deleted, holds one file, LATEST, naming the newest
-# monitor/YYYY-MM-DD branch on GitHub, so the newest snapshot can be found even when today has no
-# branch: just after midnight, or after the monitor has been down for days. Each monitor record
-# points it at its own day once that day's branch is on GitHub. Only the day's first delivery
-# changes anything; every other one sees from the copy kept in origin/monitor/latest that it
+# KIND/latest (monitor/latest, disk/latest), a branch that is never deleted, holds one file, LATEST,
+# naming the newest KIND/YYYY-MM-DD branch on GitHub, so the newest snapshot can be found even when
+# today has no branch: just after midnight, or after the snapshots have been down for days. Each
+# snapshot points it at its own day once that day's branch is on GitHub. Only the day's first
+# delivery changes anything; every other one sees from the copy kept in origin/KIND/latest that it
 # already names the day, without asking GitHub. It only ever moves forward, so a record of an
 # earlier day delivered late leaves it be. Runs in REPOSITORY, pushing to REMOTE.
-POINTER_BRANCH=monitor/latest
+POINTER_BRANCH="$KIND/latest"
 point_latest_at_day() {
     local repository="$1" remote="$2" tracking="refs/remotes/origin/$POINTER_BRANCH"
     local named blob tree commit parent=()
@@ -402,7 +403,7 @@ point_latest_at_day() {
     # A pointer branch GitHub does not have yet is made afresh.
     git -C "$repository" fetch -q "$remote" "+refs/heads/$POINTER_BRANCH:$tracking" 2> /dev/null
     named=$(git -C "$repository" cat-file -p "$tracking:LATEST" 2> /dev/null)
-    [[ "$named" =~ ^monitor/[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] && [[ ! "$named" < "$BRANCH" ]] && return 0
+    [[ "$named" =~ ^"$KIND"/[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] && [[ ! "$named" < "$BRANCH" ]] && return 0
     git -C "$repository" rev-parse -q --verify "$tracking^{commit}" > /dev/null && parent=(-p "$tracking")
     blob=$(echo "$BRANCH" | git -C "$repository" hash-object -w --stdin) \
         && tree=$(printf '100644 blob %s\tLATEST\n' "$blob" | git -C "$repository" mktree) \
@@ -460,7 +461,7 @@ deliver_directly() {
             git -C "$CLONE" rebase -q -X theirs FETCH_HEAD 2>> "$NOTES" || { git -C "$CLONE" rebase --abort; note "could not rebase onto GitHub's $BRANCH"; }
         fi
         if git -C "$CLONE" push -q "$url" "HEAD:refs/heads/$BRANCH" 2>> "$NOTES"; then
-            [ "$KIND" = monitor ] && point_latest_at_day "$CLONE" "$url"
+            [ -n "$SNAPSHOT" ] && point_latest_at_day "$CLONE" "$url"
             return 0
         fi
         declined_by_rule && break
@@ -491,10 +492,7 @@ main() {
     fi
     CLONE_START=$(git -C "$CLONE" rev-parse -q --verify HEAD || true)
     mkdir -p "$CLONE/$OUTPUT_PATH"
-    if [ "$KIND" = monitor ]; then
-        echo "$RECORD_NAME" > "$CLONE/$KIND/LATEST"
-        echo "$RECORD_NAME" > "$CLONE/$KIND/LATEST-$NAME"
-    fi
+    [ -n "$SNAPSHOT" ] && echo "$RECORD_NAME" > "$CLONE/$KIND/LATEST"
     keep_step_script "$@"
 
     run_with_datalad "$@" || run_without_datalad "$@"
