@@ -86,6 +86,13 @@ jobs:
             ARGS+=(--preview)
           fi
           dandicompute archive delete "${ARGS[@]}" | tee "$RUNNER_TEMP/delete.txt"
+          # A real run also prints the progress table of every `dandi delete` call, which pushed the
+          # first one past the 1 MB step summary limit. The step log keeps all of it; the summary
+          # keeps only the command's closing report, which starts at the line counting the capsules.
+          sed -n '/^\(Deleted\|Would delete\|No \).* job capsules\?/,$p' "$RUNNER_TEMP/delete.txt" > "$RUNNER_TEMP/report.txt"
+          if [ ! -s "$RUNNER_TEMP/report.txt" ]; then
+            tail -c 200000 "$RUNNER_TEMP/delete.txt" > "$RUNNER_TEMP/report.txt"
+          fi
           {
             if [ "$PREVIEW" = "true" ]; then
               echo "### Preview: nothing was deleted"
@@ -93,7 +100,11 @@ jobs:
               echo "### Deleted from the failed runs archive"
             fi
             echo '```'
-            cat "$RUNNER_TEMP/delete.txt"
+            head -c 900000 "$RUNNER_TEMP/report.txt"
+            if [ "$(wc -c < "$RUNNER_TEMP/report.txt")" -gt 900000 ]; then
+              echo
+              echo "... truncated to fit the 1 MB summary limit; the step log has the full list."
+            fi
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
