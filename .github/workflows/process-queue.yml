@@ -75,7 +75,7 @@ jobs:
         id: cooldown
         uses: ./.github/actions/check-cooldown
         with:
-          workflow_file: process_queue.yml
+          workflow_file: process-queue.yml
           token: ${{ github.token }}
           # Separate step names keep separate cooldowns, so a runner offline email does not
           # hold back a later email about the workflow itself failing.
