@@ -130,7 +130,7 @@ Use the [Create job capsules](https://github.com/dandi-compute/dandi-compute-run
 
 | Input | Description | Default |
 |---|---|---|
-| `limit` | Maximum number of job capsules to create per pipeline. | `5` |
+| `limit` | Maximum number of job capsules to create per pipeline and parameter set. Creation gives each asset a capsule for every parameter set (one per spike sorter for `aind+ephys`) before the next asset, so this is a limit on assets. | `5` |
 
 ## The AIND Nextflow environment
 
@@ -140,7 +140,7 @@ AIND job capsules run Nextflow from a conda environment on the cluster, which da
 
 Nextflow pulls each AIND step's container image into `work/apptainer_cache/` the first time a step needs it, inside the capsule's 1 GB driver job. Building a multi-gigabyte image takes far more memory than that, so the pull is killed and the capsule fails before any step runs.
 
-The [Update container images](https://github.com/dandi-compute/dandi-compute-runner/actions/workflows/update-container-images.yml) workflow pulls them ahead of time instead. It works out the image tag of the latest local pipeline version, and when any of its images is not cached yet it runs the pipeline's own `pull_pipeline_images.sh` in a 32 GB job on `mit_normal`. The workflow waits for the job, prints its log, and fails if an image is still missing afterwards. It runs after every [Update codebase](https://github.com/dandi-compute/dandi-compute-runner/actions/workflows/update-codebase.yml) run, since that is when a new pipeline tag arrives, and daily an hour before job capsules are created.
+The [Update container images](https://github.com/dandi-compute/dandi-compute-runner/actions/workflows/update-container-images.yml) workflow pulls them ahead of time instead. It works out the image tag of the latest local pipeline version, and when any of its images is not cached yet it runs the pipeline's own `pull_pipeline_images.sh` in a 32 GB job on `mit_normal`. Pipeline 1.5.0 added DARTsort, which has an image of its own (`aind-ephys-spikesort-dartsort`) that the upstream script does not pull, so the job pulls it directly whenever the release's `environment/images.json` names it. Lupin runs in the base image. The workflow waits for the job, prints its log, and fails if an image is still missing afterwards. It runs after every [Update codebase](https://github.com/dandi-compute/dandi-compute-runner/actions/workflows/update-codebase.yml) run, since that is when a new pipeline tag arrives, and daily an hour before job capsules are created.
 
 | Input | Description | Default |
 |---|---|---|

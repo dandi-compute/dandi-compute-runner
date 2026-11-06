@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       limit:
-        description: "Maximum number of job capsules to create per pipeline."
+        description: "Maximum number of job capsules to create per pipeline and parameter set."
         required: false
         default: "5"
   # No schedule: launcher/create_github_action_cron.sh starts this from the cluster's login node,
@@ -56,9 +56,14 @@ jobs:
         working-directory: /orcd/data/dandi/001/dandi-compute
         run: |
           # One call per configured pipeline, so each gets its own limit and none can starve another.
+          # Creation gives each asset a capsule for every parameter set of the pipeline (one per
+          # spike sorter for aind+ephys) before moving to the next asset, so the limit is scaled by
+          # the parameter set count to keep it a limit on assets.
           PIPELINES=$(python -c "from dandi_compute_code.queue import PipelineQueue; print(*PipelineQueue.load_pipeline_config()['pipelines'])")
           for pipeline in $PIPELINES; do
-            dandicompute jobs create --base /orcd/data/dandi/001/dandi-compute --pipeline "$pipeline" --limit ${{ inputs.limit || 5 }}
+            PARAMS_COUNT=$(python -c "from dandi_compute_code.queue import PipelineQueue; print(len(PipelineQueue.load_pipeline_config()['pipelines']['$pipeline'].get('params', [])))")
+            LIMIT=$(( ${{ inputs.limit || 5 }} * ${PARAMS_COUNT:-1} ))
+            dandicompute jobs create --base /orcd/data/dandi/001/dandi-compute --pipeline "$pipeline" --limit "$LIMIT"
           done
 
       - name: Wait before finishing
