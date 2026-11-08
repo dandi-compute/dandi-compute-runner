@@ -3,6 +3,8 @@
 # Record a snapshot of this user's SLURM jobs in the global logs repository, under monitor/ on
 # the day's branch. Run by the crontab on the login node every 5 minutes; it is a script rather
 # than a crontab line because cron cannot take the `%` in squeue's format. `--me` makes every job
-# this user's, so the format leaves out the USER column.
+# this user's, so the format leaves out the USER column. squeue cuts every field to its width, and
+# a pending job array's ID carries its task range and throttle (28331361_[5-1000%10]), so JOBID is
+# kept wide enough for one.
 exec /orcd/data/dandi/001/dandi-compute/dandi-compute-runner/launcher/record.sh monitor squeue -- \
-    squeue --me --format="%.10i %15P %40j %.2t %.10M %.6D %.2C %.10m %30R"
+    squeue --me --format="%.30i %15P %40j %.2t %.10M %.6D %.2C %.10m %30R"
