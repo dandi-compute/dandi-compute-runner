@@ -48,10 +48,18 @@ source /orcd/data/dandi/001/dandi-compute/dandi-compute-runner/launcher/install_
 
 [`launcher/install_crontab.sh`](launcher/install_crontab.sh) reinstalls `launcher/crontab` whenever the existing crontab differs from it. Two things run it:
 
-- The [Refresh crontab](https://github.com/dandi-compute/dandi-compute-runner/actions/workflows/refresh-crontab.yml) workflow, every hour on the runner. Its schedule is on GitHub, so it still runs when the crontab is gone. While the runner is offline it sends the runner offline email instead (at most once a day).
+- The [Refresh crontab](https://github.com/dandi-compute/dandi-compute-runner/actions/workflows/refresh-crontab.yml) workflow, every hour on the runner. Its schedule is on GitHub, so it still runs when the crontab is gone, and it is what sends the runner offline email (see [When the runner is offline](#when-the-runner-is-offline)).
 - [`launcher/revive.sh`](launcher/revive.sh), a Slurm job that resubmits itself every hour.
 
 If both the crontab and the runner are gone, reinstall the crontab by hand from a login node shell, and cron relaunches the runner within a minute.
+
+## When the runner is offline
+
+The runner is usually offline only briefly, between the end of its 12-hour Slurm job (or a preemption) and the relaunch, so an offline runner is not treated as a failure and sends no email until it has lasted 3 days.
+
+- Workflows that run unattended (Process AIND Queue, Create job capsules, Update container images, Clean work directory and Refresh crontab) start with a GitHub-hosted **Check runner is online** job ([`.github/actions/check-runner`](.github/actions/check-runner/action.yml)). While the runner is offline, it skips the self-hosted job and the run still succeeds, with a notice saying so. Create job capsules, Update container images and Clean work directory first wait up to 60 minutes for the runner to come back. Process AIND Queue does not wait, since the login node dispatches it again 15 minutes later while there is work. Skipped work is not retried until the workflow's next run.
+- Workflows that are only started by hand (Archive job, Prepare AIND test job, Update codebase) have no check. While the runner is offline, their job waits for it in GitHub's queue and runs once the runner is back. GitHub fails a self-hosted job that has waited about a day.
+- Only [Refresh crontab](https://github.com/dandi-compute/dandi-compute-runner/actions/workflows/refresh-crontab.yml) reports an outage. When it finds the runner offline, its **Runner offline watchdog** job looks for the newest run of Refresh crontab that got onto the runner. If there is none from the last 72 hours (`OFFLINE_ALERT_HOURS`), the watchdog fails and the runner offline email goes out, at most once a day. GitHub's own email about the failed run comes on every run of Refresh crontab until the runner is back.
 
 ## Global logs
 
