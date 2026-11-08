@@ -31,21 +31,10 @@ env:
   DANDICOMPUTE_OOP_FAILSAFE_LOG: ${{ vars.DANDICOMPUTE_OOP_FAILSAFE_LOG }}
 
 jobs:
-  CheckEngaging:
-    name: Check runner is online
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Fail if runner is offline
-        uses: ./.github/actions/check-runner
-        with:
-          labels: mit,engaging,submitter
-          token: ${{ secrets._GITHUB_API_KEY }}
-
   UpdateCodebase:
-    needs: CheckEngaging
     name: Update codebase
+    # Started by hand, so there is no runner check: while the runner is offline the job waits for it
+    # ("Waiting for a runner to pick up this job") and runs once it is back.
     runs-on: [self-hosted, mit, engaging, submitter]
     # Each step records itself in the global logs repository (see launcher/record.sh), inside
     # GitHub's own default shell for bash. Until record.sh is on this machine (the first Update

@@ -1,5 +1,9 @@
 name: Check self-hosted runner
-description: Fails the job, with a "runner offline" annotation, if no self-hosted runner with the given labels is online.
+description: >
+  Reports whether a self-hosted runner with the given labels is online, waiting for one for up to
+  `wait-minutes` first. An offline runner is not a failure: the caller skips its self-hosted job
+  on `online` being 'false', and the Refresh crontab workflow alone reports a runner that has been
+  offline for days. Only a failure to list the runners fails this action.
 
 inputs:
   labels:
@@ -8,29 +12,53 @@ inputs:
   token:
     description: "GitHub token to use for authentication."
     required: true
+  wait-minutes:
+    description: "How long to keep checking, once a minute, for the runner to come online before reporting it offline."
+    required: false
+    default: "0"
+
+outputs:
+  online:
+    description: "'true' if a runner with the labels is online, 'false' if none came online within `wait-minutes`."
+    value: ${{ steps.check.outputs.online }}
 
 runs:
   using: "composite"
   steps:
     - shell: bash
       run: chmod +x "$GITHUB_ACTION_PATH/script.sh"
-    - shell: bash
+    - id: check
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        LABELS: ${{ inputs.labels }}
+        WAIT_MINUTES: ${{ inputs.wait-minutes }}
       run: |
         set -e
-        export GH_TOKEN="${{ inputs.token }}"
-        if ! output=$("$GITHUB_ACTION_PATH/script.sh" "${{ inputs.labels }}"); then
-          echo "::error title=Runner check failed::Could not list the self-hosted runners of this repository, so whether the runner is online is unknown. See the log of this step."
-          exit 1
+        deadline=$(( $(date +%s) + ${WAIT_MINUTES:-0} * 60 ))
+        while true; do
+          if ! online=$("$GITHUB_ACTION_PATH/script.sh" "$LABELS"); then
+            echo "::error title=Runner check failed::Could not list the self-hosted runners of this repository, so whether the runner is online is unknown. See the log of this step."
+            exit 1
+          fi
+          echo "Runner check output: $online"
+          if [ "$online" = "true" ] || [ "$(date +%s)" -ge "$deadline" ]; then
+            break
+          fi
+          sleep 60
+        done
+        echo "online=$online" >> "$GITHUB_OUTPUT"
+        if [ "$online" = "true" ]; then
+          echo "Runner is online. Proceeding."
+          exit 0
         fi
-        echo "Runner check output: $output"
-        if [[ "$output" != "true" ]]; then
-          message="No self-hosted runner with labels ${{ inputs.labels }} is online, so the rest of this workflow did not run. Restart the runner, then re-run this workflow."
-          echo "::error title=Self-hosted runner offline::$message"
-          {
-            echo "### Self-hosted runner offline"
-            echo
-            echo "$message"
-          } >> "$GITHUB_STEP_SUMMARY"
-          exit 1
+        if [ "${WAIT_MINUTES:-0}" -gt 0 ]; then
+          waited=" after waiting ${WAIT_MINUTES} minutes"
         fi
-        echo "Runner is online. Proceeding."
+        message="No self-hosted runner with labels ${LABELS} was online${waited:-}, so the self-hosted job of this run was skipped. Nothing failed: the Refresh crontab workflow sends an email once the runner has been offline for 3 days."
+        echo "::notice title=Self-hosted runner offline::$message"
+        {
+          echo "### Self-hosted runner offline"
+          echo
+          echo "$message"
+        } >> "$GITHUB_STEP_SUMMARY"
