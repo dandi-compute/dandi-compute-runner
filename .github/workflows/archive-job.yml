@@ -27,7 +27,7 @@ on:
           - aind+ephys
           - lfp
       job_ids:
-        description: "Job IDs of the capsules to archive, separated by commas (e.g. `job-2611070700cd,job-2610112809e9`). Only used when `status` and `pipeline` are both `all`."
+        description: "Job IDs of the capsules to archive, separated by commas, with or without the `job-` prefix (e.g. `2611070700cd,2610112809e9`). Only used when `status` and `pipeline` are both `all`."
         required: false
         type: string
 
