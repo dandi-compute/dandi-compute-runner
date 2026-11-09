@@ -53,6 +53,17 @@ jobs:
         working-directory: /orcd/data/dandi/001/dandi-compute
         run: dandicompute clean --base /orcd/data/dandi/001/dandi-compute --work
 
+      # launcher/launch_submitter.sh points the DANDI CLI's logs here, one file per call.
+      - name: Delete DANDI CLI logs older than 30 days
+        working-directory: /orcd/data/dandi/001/dandi-compute
+        run: |
+          LOG_DIRECTORY=/orcd/data/dandi/001/dandi-compute/state/dandi-cli/log
+          if [ -d "$LOG_DIRECTORY" ]; then
+            echo "Deleted $(find "$LOG_DIRECTORY" -type f -name '*.log' -mtime +30 -print -delete | wc -l) log(s) from $LOG_DIRECTORY"
+          else
+            echo "No $LOG_DIRECTORY yet"
+          fi
+
   NotifyOnFailure:
     if: ${{ always() && failure() }}  # 'always' for if any 'needs' are cancelled/skipped
     needs: [CheckEngaging, CleanWorkDirectory]

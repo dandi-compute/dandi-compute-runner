@@ -26,8 +26,8 @@ on:
           - all
           - aind+ephys
           - lfp
-      path:
-        description: "Path of a single job capsule folder, relative to the job capsules Dandiset root. Only used when `status` and `pipeline` are both `all`."
+      job_ids:
+        description: "Job IDs of the capsules to archive, separated by commas (e.g. `job-2611070700cd,job-2610112809e9`). Only used when `status` and `pipeline` are both `all`."
         required: false
         type: string
 
@@ -63,17 +63,17 @@ jobs:
         env:
           STATUS: ${{ inputs.status }}
           PIPELINE: ${{ inputs.pipeline }}
-          CAPSULE_PATH: ${{ inputs.path }}
+          JOB_IDS: ${{ inputs.job_ids }}
         run: |
           if [ "$STATUS" = "all" ] && [ "$PIPELINE" = "all" ]; then
-            if [ -z "$CAPSULE_PATH" ]; then
-              echo "::error::Provide a job capsule \`path\`, or choose a \`status\` and/or \`pipeline\` to archive."
+            if [ -z "$JOB_IDS" ]; then
+              echo "::error::Provide \`job_ids\`, or choose a \`status\` and/or \`pipeline\` to archive."
               exit 1
             fi
-            ARGS=(--job "$CAPSULE_PATH")
+            ARGS=(--job "$JOB_IDS")
           else
-            if [ -n "$CAPSULE_PATH" ]; then
-              echo "::error::\`path\` must be empty when archiving by \`status\` ($STATUS) or \`pipeline\` ($PIPELINE)."
+            if [ -n "$JOB_IDS" ]; then
+              echo "::error::\`job_ids\` must be empty when archiving by \`status\` ($STATUS) or \`pipeline\` ($PIPELINE)."
               exit 1
             fi
             ARGS=()
