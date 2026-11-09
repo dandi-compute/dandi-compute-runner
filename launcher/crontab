@@ -14,6 +14,10 @@
 # A disk usage snapshot every 30 minutes, recorded under disk/ (see launcher/disk.sh).
 */30 * * * * /bin/bash -l -c '/orcd/data/dandi/001/dandi-compute/dandi-compute-runner/launcher/disk.sh' > /dev/null 2>&1
 
+# Every Sunday at 04:00, clear the Apptainer blobs older than a week, the dandi-cli logs and the
+# Bazel cache from the home directory, recorded under logs/ (see launcher/clean_home.sh).
+0 4 * * 0 /orcd/data/dandi/001/dandi-compute/dandi-compute-runner/launcher/clean_home.sh > /dev/null 2>&1
+
 # Backup processes
 0 22 * * * flock -n /orcd/data/dandi/001/backup/flocks/backup_blobs_batch.lock sbatch --output /dev/null --error=/dev/null /orcd/data/dandi/001/backup/simple-s3-backup/scripts/backup_blobs_batch_deployment.sh
 #0 19 * * 0,3 flock -n /orcd/data/dandi/001/backup/flocks/backup_zarr_batch.lock sbatch --output /dev/null --error=/dev/null /orcd/data/dandi/001/backup/simple-s3-backup/scripts/backup_zarr_batch_deployment.sh  # Zarr was disabled in May 2026

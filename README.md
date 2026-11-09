@@ -83,6 +83,20 @@ chmod 600 /orcd/data/dandi/001/dandi-compute/dandi-compute-global-logs/.git/conf
 
 Every push goes through that clone's origin. Since duct samples the command line of every process a step starts, every file and message of a record passes through [`launcher/redact.sed`](launcher/redact.sed) before it is committed, which masks GitHub tokens, `Authorization` headers, credentials in URLs and DANDI API keys, including the one `record.sh` itself runs with wherever it appears. duct's `info.json` also leaves out the `system` and `env` duct records (host, user, OS, SLURM variables), through [`launcher/strip_duct_info.py`](launcher/strip_duct_info.py). Records made before that masking can hold a token, which GitHub's push protection rejects; [`launcher/scrub_global_logs.sh`](launcher/scrub_global_logs.sh) masks every record the shared checkout has not pushed yet, rewriting only the file versions that need it without checking anything out, and the next record pushes them.
 
+## Home directory cleanup
+
+The home directory has a quota on both space and number of files (shown in the disk usage snapshots), and a few caches and logs fill it. As part of the cluster-wide cleanup, cron on the login node runs [`launcher/clean_home.sh`](launcher/clean_home.sh) every Sunday at 04:00 (login node time), which deletes:
+
+- the Apptainer blobs older than 7 days in `~/.apptainer/cache/blob/blobs/sha256/`
+- every dandi-cli log in `~/.local/state/dandi-cli/log/`
+- everything in Bazel's output root, `~/.cache/bazel/_bazel_$USER/`
+
+Each run is recorded in the global logs under `logs/`, with what each step deleted. A directory that is not there is skipped, and the run exits non-zero if any step failed. To run it by hand from a login node shell (it records itself there too):
+
+```bash
+/orcd/data/dandi/001/dandi-compute/dandi-compute-runner/launcher/clean_home.sh
+```
+
 ## Queue state
 
 The [Refresh state](https://github.com/dandi-compute/dandi-compute-runner/actions/workflows/refresh-state.yml) workflow rewrites `derivatives/jobs.tsv`, `paths.tsv` and their sidecars in the job capsules (001697) and failed runs archive (001873) Dandisets. It reads only from DANDI and writes only to DANDI, so it runs on a GitHub-hosted runner rather than on the cluster. It runs every hour and after each run of the workflows that change the queue, and uploads only the tables whose content changed. Its Python environment is cached per commit of dandi-compute-core's `main`.
