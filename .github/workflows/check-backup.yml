@@ -8,7 +8,8 @@ name: Check backup
 #
 #   - Check backup jobs reads `sacct` on the cluster for the backup jobs of the last day. It fails
 #     when one was not submitted at all, or a task of one failed, and shows the end of that task's
-#     log.
+#     log. A task of DANDI-Verify-Checksums fails when a mirrored blob does not match the bucket,
+#     and its log ends with the blobs that do not.
 #   - Check mirror growth reads the history of https://github.com/dandi/backup-status, which the
 #     dashboard job updates every morning. It fails when the mirror has not gained a blob in
 #     GROWTH_DAYS days while the bucket has, which catches a backup that stops copying without
@@ -62,7 +63,7 @@ jobs:
       report: ${{ steps.jobs.outputs.report }}
     env:
       # The names launcher/backup.sh gives the jobs the crontab submits every day.
-      JOBS: DANDI-Backup-Blobs DANDI-Backup-Nonblobs DANDI-Update-Backup-Dashboard
+      JOBS: DANDI-Backup-Blobs DANDI-Backup-Nonblobs DANDI-Update-Backup-Dashboard DANDI-Verify-Checksums
       LOG_DIRECTORY: /orcd/data/dandi/001/backup/logs
       REDACT_SCRIPT: /orcd/data/dandi/001/dandi-compute/dandi-compute-runner/launcher/redact.sed
       WINDOW_HOURS: 24
@@ -259,7 +260,7 @@ jobs:
           to: cody.c.baker.phd@gmail.com  # Add more with comma separation (no spaces)
           from: DANDI Compute <dandi-compute@users.noreply.github.com>
           body: |
-            The check of the DANDI S3 backup on MIT Engaging found a problem. Job capsules whose blob is not in the mirror fail on a missing input.
+            The check of the DANDI S3 backup on MIT Engaging found a problem. Job capsules whose blob is not in the mirror fail on a missing input, and those whose blob in the mirror does not match the bucket (DANDI-Verify-Checksums) read the wrong data.
 
             Backup jobs (${{ needs.CheckBackupJobs.result }}):
             ${{ needs.CheckBackupJobs.outputs.report || 'No report. The check did not run (the runner was offline) or failed before reporting; see the run.' }}

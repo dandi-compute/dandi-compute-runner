@@ -106,8 +106,11 @@ The cluster keeps a mirror of the DANDI S3 bucket on the project partitions, and
 | `DANDI-Backup-Blobs` | daily at 22:00 | Copies new blobs, in a 16-task array with one task per first hex digit of the content ID |
 | `DANDI-Backup-Nonblobs` | daily at 18:00 | Copies everything outside `blobs/` and `zarr/` |
 | `DANDI-Update-Backup-Dashboard` | daily at 06:00 | Updates the [backup-status](https://github.com/dandi/backup-status) dashboard |
+| `DANDI-Verify-Checksums` | daily at 10:00 | Compares the content of each mirrored blob with its ETag in the bucket, in a 16-task array, 4 tasks at a time |
 
 The Zarr backup (`backup.sh zarr`) has been disabled since May 2026.
+
+The blob backup's `s5cmd cp --if-size-differ --if-source-newer` compares only sizes and times, so `DANDI-Verify-Checksums` checks the content itself (see [Verifying the content of the blob mirror](https://github.com/dandi/simple-s3-backup#verifying-the-content-of-the-blob-mirror)). It caches each blob's checksum beside it as `.{blob_id}.checksum`, so after the first pass it reads only the blobs copied since. The first pass reads the whole mirror and takes several days: its tasks time out at 12 hours, which only gives a warning, and the next day's run carries on where they stopped. A task fails when a blob does not match, and its log ends with each one. `s3backup dandi verify-checksums <task_id> --repair` copies those again.
 
 Each submission is recorded in the global logs under `logs/{timestamp}-backup-{kind}/`, with the job ID `sbatch` gave it. Each job writes its own output to `/orcd/data/dandi/001/backup/logs/{job name}-{job ID}.log`, or `{job name}-{array job}_{task}.log` for the arrays. Logs older than 30 days are deleted at the next submission.
 
