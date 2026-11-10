@@ -214,15 +214,17 @@ section_backup_environment() {
     fi
     show "SBATCH directives of $BLOB_SCRIPT" grep '^#SBATCH' "$BLOB_SCRIPT"
 
-    # Every command of the script up to the backup itself, each failure reported where it happens
-    # (the script has no `set -e`, so a failed setup step only shows in the last command's status).
+    # Every command of the script before its first line that runs s3backup, each failure reported
+    # where it happens (without `set -e`, a failed setup step only shows in the last command's
+    # status). The script is cut there rather than having that line dropped, which would leave an
+    # `if` around it without a body.
     local probe output
     probe=$(mktemp)
     output=$(mktemp)
     {
         echo "trap 'echo \"!!! exit \$? from: \$BASH_COMMAND\" >&2' ERR"
         echo 'set -x'
-        grep -v -e '^[[:space:]]*#' -e '^[[:space:]]*$' -e 's3backup' "$BLOB_SCRIPT"
+        awk '/s3backup/ { exit } /^[[:space:]]*(#|$)/ { next } { print }' "$BLOB_SCRIPT"
         echo 'set +x'
         cat << 'PROBE'
 echo "--- after the setup"
@@ -241,11 +243,14 @@ echo "--- the same without signing"
 s5cmd --no-sign-request ls 's3://dandiarchive/blobs/482/5cf/*'
 PROBE
     } > "$probe"
-    show "Commands replayed (from $BLOB_SCRIPT, without its backup line)" cat "$probe"
+    show "Commands replayed (from $BLOB_SCRIPT, up to its first line that runs s3backup)" cat "$probe"
     echo
-    echo "### Replayed in cron's environment (only HOME, LOGNAME, USER, SHELL=/bin/sh and PATH=/usr/bin:/bin set)"
+    echo "### Replayed in cron's environment (only HOME, LOGNAME, USER, SHELL=/bin/sh and PATH=/usr/bin:/bin set), as array task $REPRODUCE_TASK"
     local status
-    timeout "$COMMAND_TIMEOUT" "${CRON_ENVIRONMENT[@]}" /bin/bash "$probe" > "$output" 2>&1
+    # As one task of the array: the script names its lock file after the task, and without a task
+    # it would make a stray lock file in the shared lock directory.
+    local task_environment=(SLURM_ARRAY_TASK_ID="$REPRODUCE_TASK" SLURM_ARRAY_JOB_ID=replay)
+    timeout "$COMMAND_TIMEOUT" "${CRON_ENVIRONMENT[@]}" "${task_environment[@]}" /bin/bash "$probe" > "$output" 2>&1
     status=$?
     head -c "$MAX_OUTPUT_BYTES" "$output"
     echo "[exit $status]"
@@ -261,11 +266,12 @@ PROBE
         sed -i -E 's/^[[:space:]]*set[[:space:]]+-[a-z]*[eu][a-z]*([[:space:]]+(-o[[:space:]]+)?pipefail)?[[:space:]]*$/: removed for this replay/' "$probe"
         echo
         echo "### Replayed again without the script's own set -e and set -u"
-        timeout "$COMMAND_TIMEOUT" "${CRON_ENVIRONMENT[@]}" /bin/bash "$probe" > "$output" 2>&1
+        timeout "$COMMAND_TIMEOUT" "${CRON_ENVIRONMENT[@]}" "${task_environment[@]}" /bin/bash "$probe" > "$output" 2>&1
         status=$?
         head -c "$MAX_OUTPUT_BYTES" "$output"
         echo "[exit $status]"
         failed_steps=$(grep '^!!! exit' "$output" | head -n 10)
+        [ "$status" -ne 0 ] && [ -z "$failed_steps" ] && failed_steps="the replay itself exited $status: $(grep -v '^+' "$output" | tail -n 1)"
         fact setup_failures_without_set_options "${failed_steps:-none}"
     fi
     rm -f "$probe" "$output"
