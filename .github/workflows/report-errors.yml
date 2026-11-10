@@ -1,0 +1,97 @@
+name: Report errors
+
+# Records what is going wrong on the cluster in the global logs repository, under errors/ on the
+# day's errors/YYYY-MM-DD branch, so it can be read without a shell on the cluster. Each section of
+# launcher/report_errors.sh is a record of its own: the simple-s3-backup checkout and the crontab,
+# the blob backup's setup replayed in cron's environment, one blob backup task traced, the jobs
+# that failed in the last week with the errors their Nextflow tasks ended with, and the job
+# capsules whose input blob is missing. The last, diagnosis, says what the others point to, and is
+# also this run's summary.
+#
+# It runs every day, by hand, and on pull requests that change it, so a change to the report is
+# seen working before it is merged. Every run but the scheduled one also submits one task of the
+# blob backup the way cron does, traced, to see how it fails. Nothing here fails the run or sends
+# email: the Check backup workflow does the alerting.
+
+on:
+  workflow_dispatch:
+    inputs:
+      reproduce:
+        description: "Also submit one task of the blob backup, traced, to see how it fails."
+        type: boolean
+        default: true
+  schedule:
+    - cron: "7 15 * * *"
+  pull_request:
+    paths:
+      - .github/workflows/report-errors.yml
+      - launcher/report_errors.sh
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  CheckEngaging:
+    name: Check runner is online
+    runs-on: ubuntu-latest
+    outputs:
+      online: ${{ steps.runner.outputs.online }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Check whether the runner is online
+        id: runner
+        uses: ./.github/actions/check-runner
+        with:
+          labels: mit,engaging,submitter
+          token: ${{ secrets._GITHUB_API_KEY }}
+          # Long enough to ride out the runner's relaunch at its 12-hour time limit or a preemption.
+          wait-minutes: 60
+
+  ReportErrors:
+    needs: CheckEngaging
+    # Pull requests from forks are disabled in this repository; this keeps one off the cluster
+    # should that ever change.
+    if: ${{ needs.CheckEngaging.outputs.online == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+    name: Report errors
+    runs-on: [self-hosted, mit, engaging, submitter]
+    timeout-minutes: 120
+    # Each section records itself under errors/, from the copy of the script this run checked
+    # out, so the steps run in a plain shell rather than being recorded again under logs/.
+    defaults:
+      run:
+        shell: bash --noprofile --norc -eo pipefail {0}
+    env:
+      REPRODUCE: ${{ github.event_name != 'schedule' && (github.event_name != 'workflow_dispatch' || inputs.reproduce) }}
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # A section that cannot run at all fails its step without keeping the others from running.
+      - name: The simple-s3-backup checkout and the installed crontab
+        continue-on-error: true
+        run: bash launcher/report_errors.sh backup-checkout
+
+      - name: The blob backup's setup replayed in cron's environment
+        continue-on-error: true
+        run: bash launcher/report_errors.sh backup-environment
+
+      - name: One blob backup task, traced
+        continue-on-error: true
+        run: bash launcher/report_errors.sh backup-reproduce
+
+      - name: Jobs that failed in the last week
+        continue-on-error: true
+        run: bash launcher/report_errors.sh slurm-failures
+
+      - name: Job capsules whose input blob is missing
+        continue-on-error: true
+        run: bash launcher/report_errors.sh missing-blobs
+
+      - name: Diagnosis
+        run: bash launcher/report_errors.sh diagnosis
