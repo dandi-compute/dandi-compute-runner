@@ -1,0 +1,271 @@
+name: Check backup
+
+# Every job capsule reads its input from the cluster's mirror of the DANDI S3 bucket, which the
+# backup jobs of simple-s3-backup keep up to date (see launcher/backup.sh). Nothing else watches
+# them: from June to November 2026 every task of the nightly blob backup failed within a second,
+# no blob uploaded in that time reached the mirror, and the capsules for those blobs failed on a
+# missing input. This checks the backup from two sides and emails when either finds a problem.
+#
+#   - Check backup jobs reads `sacct` on the cluster for the backup jobs of the last day. It fails
+#     when one was not submitted at all, or a task of one failed, and shows the end of that task's
+#     log.
+#   - Check mirror growth reads the history of https://github.com/dandi/backup-status, which the
+#     dashboard job updates every morning. It fails when the mirror has not gained a blob in
+#     GROWTH_DAYS days while the bucket has, which catches a backup that stops copying without
+#     any task failing.
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Late morning on the cluster, once the blob backup started at 22:00 has had its 12 hours.
+    - cron: "37 16 * * *"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  CheckEngaging:
+    name: Check runner is online
+    runs-on: ubuntu-latest
+    outputs:
+      online: ${{ steps.runner.outputs.online }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Check whether the runner is online
+        id: runner
+        uses: ./.github/actions/check-runner
+        with:
+          labels: mit,engaging,submitter
+          token: ${{ secrets._GITHUB_API_KEY }}
+          # Long enough to ride out the runner's relaunch at its 12-hour time limit or a preemption.
+          wait-minutes: 60
+
+  CheckBackupJobs:
+    needs: CheckEngaging
+    if: ${{ needs.CheckEngaging.outputs.online == 'true' }}
+    name: Check backup jobs
+    runs-on: [self-hosted, mit, engaging, submitter]
+    # Each step records itself in the global logs repository (see launcher/record.sh), inside
+    # GitHub's own default shell for bash. Until record.sh is on this machine (the first Update
+    # codebase run is what brings it), a step runs in that shell unrecorded rather than failing.
+    defaults:
+      run:
+        shell: bash --noprofile --norc -c "test -x /orcd/data/dandi/001/dandi-compute/dandi-compute-runner/launcher/record.sh && exec /orcd/data/dandi/001/dandi-compute/dandi-compute-runner/launcher/record.sh logs check-backup -- bash --noprofile --norc -eo pipefail $0; echo record.sh not found, running unrecorded >&2; exec bash --noprofile --norc -eo pipefail $0" {0}
+    timeout-minutes: 15
+    outputs:
+      report: ${{ steps.jobs.outputs.report }}
+    env:
+      # The names launcher/backup.sh gives the jobs the crontab submits every day.
+      JOBS: DANDI-Backup-Blobs DANDI-Backup-Nonblobs DANDI-Update-Backup-Dashboard
+      LOG_DIRECTORY: /orcd/data/dandi/001/backup/logs
+      REDACT_SCRIPT: /orcd/data/dandi/001/dandi-compute/dandi-compute-runner/launcher/redact.sed
+      WINDOW_HOURS: 24
+      # How many failed tasks of a job have the end of their log shown, and how much of it.
+      LOGS_SHOWN: 2
+      LOG_LINES: 20
+
+    steps:
+      - name: Check the backup jobs of the last day
+        id: jobs
+        run: |
+          # sacct prints times in the cluster's own time zone, which date uses here too, so the
+          # two compare as text.
+          since=$(date -d "${WINDOW_HOURS} hours ago" '+%Y-%m-%dT%H:%M:%S')
+          # Twice the window, so a job submitted before it that ended inside it is listed too.
+          listed_from=$(date -d "$((2 * WINDOW_HOURS)) hours ago" '+%Y-%m-%dT%H:%M:%S')
+          if ! records=$(sacct --user "$(id -un)" --allocations --noheader --parsable2 \
+              --starttime "$listed_from" --name "${JOBS// /,}" \
+              --format JobID,JobName,Submit,End,State,ExitCode,Elapsed); then
+            echo "::error title=sacct failed::Could not list the backup jobs with sacct, so whether they ran is unknown."
+            exit 1
+          fi
+
+          redact() {
+            if [ -f "$REDACT_SCRIPT" ]; then sed -E -f "$REDACT_SCRIPT"; else cat; fi
+          }
+          # The rows whose state is one of the given ones, or none of them with `!`. sacct writes
+          # a cancellation as "CANCELLED by UID", so only the state's first word is compared.
+          rows_in_state() {
+            awk -F'|' -v pattern="^($2)\$" -v negate="${3:-}" \
+              '$0 != "" { split($5, state, " "); if ((state[1] ~ pattern) != (negate == "!")) print }' <<< "$1"
+          }
+          # The first five rows, one task per line.
+          describe() {
+            awk -F'|' 'NR <= 5 { printf "  %s %s (exit %s after %s)\n", $1, $5, $6, $7 }' <<< "$1"
+          }
+          FAILED_STATES='FAILED|OUT_OF_MEMORY|NODE_FAIL|BOOT_FAIL|DEADLINE'
+
+          report=$(mktemp)
+          failed=0
+          for job in $JOBS; do
+            # One row per job, or per task of an array job: JobID|JobName|Submit|End|State|ExitCode|Elapsed.
+            # A task still running or pending has no End yet.
+            rows=$(awk -F'|' -v job="$job" '$2 == job' <<< "$records")
+            submitted=$(awk -F'|' -v since="$since" '$3 >= since' <<< "$rows" | grep -c . || true)
+            ended=$(awk -F'|' -v since="$since" '$4 ~ /^[0-9]/ && $4 >= since' <<< "$rows")
+            completed=$(rows_in_state "$ended" COMPLETED | grep -c . || true)
+            failures=$(rows_in_state "$ended" "$FAILED_STATES")
+            failed_count=$(grep -c . <<< "$failures" || true)
+            others=$(rows_in_state "$ended" "COMPLETED|$FAILED_STATES" !)
+            other_count=$(grep -c . <<< "$others" || true)
+            in_progress=$(awk -F'|' '$0 != "" && $4 !~ /^[0-9]/' <<< "$rows" | grep -c . || true)
+
+            if [ "$submitted" -eq 0 ] && [ -z "$ended" ]; then
+              failed=1
+              echo "::error title=${job} not submitted::No ${job} job was submitted in the last ${WINDOW_HOURS} hours."
+              {
+                echo "${job}: no job was submitted in the last ${WINDOW_HOURS} hours."
+                echo "  The crontab submits it through launcher/backup.sh, which records each submission in the"
+                echo "  global logs under logs/. Check that the crontab is installed and what the last submission printed."
+              } >> "$report"
+              continue
+            fi
+
+            echo "${job}: ${completed} completed, ${failed_count} failed, ${other_count} ended otherwise in the last ${WINDOW_HOURS} hours; ${in_progress} still pending or running." >> "$report"
+            if [ "$other_count" -gt 0 ]; then
+              # A timeout or preemption on mit_preemptable is not a failure of the backup itself;
+              # Check mirror growth notices if it keeps the mirror from growing.
+              echo "::warning title=${job} ended early::${other_count} of its tasks timed out, were preempted or were cancelled in the last ${WINDOW_HOURS} hours."
+              describe "$others" >> "$report"
+            fi
+            if [ "$failed_count" -gt 0 ]; then
+              failed=1
+              echo "::error title=${job} failed::${failed_count} of its tasks failed in the last ${WINDOW_HOURS} hours."
+              describe "$failures" >> "$report"
+              if [ "$failed_count" -gt 5 ]; then
+                echo "  ... and $((failed_count - 5)) more" >> "$report"
+              fi
+              while read -r job_id; do
+                log_file="${LOG_DIRECTORY}/${job}-${job_id}.log"
+                echo "  End of ${log_file}:" >> "$report"
+                if [ -r "$log_file" ]; then
+                  tail -n "$LOG_LINES" "$log_file" | redact | sed 's/^/    | /' >> "$report"
+                else
+                  echo "    (not there; jobs submitted before launcher/backup.sh sent their output to /dev/null)" >> "$report"
+                fi
+              done < <(awk -F'|' -v shown="$LOGS_SHOWN" 'NR <= shown { print $1 }' <<< "$failures")
+            fi
+          done
+
+          cat "$report"
+          {
+            echo "### Backup jobs of the last ${WINDOW_HOURS} hours"
+            echo
+            echo '```'
+            cat "$report"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          delimiter="REPORT_$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')"
+          {
+            echo "report<<${delimiter}"
+            cat "$report"
+            echo "${delimiter}"
+          } >> "$GITHUB_OUTPUT"
+          exit "$failed"
+
+  CheckMirrorGrowth:
+    name: Check mirror growth
+    runs-on: ubuntu-latest
+    outputs:
+      report: ${{ steps.growth.outputs.report }}
+    env:
+      GROWTH_DAYS: 3
+
+    steps:
+      - name: Check that the blob mirror is growing
+        id: growth
+        run: |
+          set -uo pipefail
+          # Only the history is fetched up front; each file version is fetched when it is read.
+          git clone --quiet --filter=blob:none --no-checkout https://github.com/dandi/backup-status "$RUNNER_TEMP/backup-status"
+          cd "$RUNNER_TEMP/backup-status"
+
+          write_report() {
+            echo "$1"
+            {
+              echo "### Blob mirror growth"
+              echo
+              echo "$1"
+            } >> "$GITHUB_STEP_SUMMARY"
+            delimiter="REPORT_$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')"
+            printf 'report<<%s\n%s\n%s\n' "$delimiter" "$1" "$delimiter" >> "$GITHUB_OUTPUT"
+          }
+
+          # The blobs/ row of the dashboard's object counts, as "local remote".
+          blob_counts() {
+            git show "$1:data/content.json" | jq -r '
+              .data as $data
+              | ($data.Location | index("blobs/")) as $row
+              | $data | to_entries[] | select(.key | startswith("Number of Objects")) | .value[$row]
+              | capture("^(?<local>[0-9]+) / (?<remote>[0-9]+)") | "\(.local) \(.remote)"'
+          }
+
+          newest=$(git rev-list -1 HEAD -- data/content.json)
+          newest_date=$(git log -1 --format=%cI "$newest")
+          if [ "$(date -d "$newest_date" +%s)" -lt "$(date -d "${GROWTH_DAYS} days ago" +%s)" ]; then
+            # The dashboard job has stopped too. backup-status's own Check last update time
+            # workflow emails about that, so this only says why it cannot tell.
+            echo "::warning title=Dashboard not updated::The backup dashboard was last updated at ${newest_date}, more than ${GROWTH_DAYS} days ago, so whether the mirror is growing is unknown."
+            write_report "The backup dashboard was last updated at ${newest_date}, so whether the mirror is growing is unknown."
+            exit 0
+          fi
+          oldest=$(git rev-list -1 --before="${GROWTH_DAYS} days ago" HEAD -- data/content.json)
+          if [ -z "$oldest" ]; then
+            write_report "The backup dashboard has no update from ${GROWTH_DAYS} days ago to compare with."
+            exit 0
+          fi
+          oldest_date=$(git log -1 --format=%cI "$oldest")
+
+          if ! read -r local_then remote_then <<< "$(blob_counts "$oldest")" \
+              || ! read -r local_now remote_now <<< "$(blob_counts "$newest")" \
+              || [ -z "${local_then:-}" ] || [ -z "${local_now:-}" ]; then
+            echo "::error title=Dashboard unreadable::Could not read the blob counts from data/content.json of dandi/backup-status."
+            write_report "Could not read the blob counts from data/content.json of https://github.com/dandi/backup-status, so whether the mirror is growing is unknown."
+            exit 1
+          fi
+
+          gained_locally=$((local_now - local_then))
+          gained_remotely=$((remote_now - remote_then))
+          report="Between ${oldest_date} and ${newest_date} the mirror went from ${local_then} to ${local_now} blobs (${gained_locally}), and the bucket from ${remote_then} to ${remote_now} (${gained_remotely}). The mirror now holds ${local_now} of ${remote_now} blobs."
+          if [ "$gained_locally" -le 0 ] && [ "$gained_remotely" -gt 0 ]; then
+            echo "::error title=Blob mirror not growing::The mirror has not gained a blob in ${GROWTH_DAYS} days while the bucket gained ${gained_remotely}."
+            write_report "The blob mirror has not grown in ${GROWTH_DAYS} days. ${report}"
+            exit 1
+          fi
+          write_report "$report"
+
+  # The checks run once a day, so this sends no more than one email a day without the 24-hour
+  # cooldown of the other workflows, which would skip every other day's email whenever GitHub
+  # started a run a little earlier than the day before.
+  NotifyOnFailure:
+    if: ${{ always() && failure() }}  # 'always' for if any 'needs' are cancelled/skipped
+    needs: [CheckEngaging, CheckBackupJobs, CheckMirrorGrowth]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Send email notification on failure
+        uses: dawidd6/action-send-mail@67ce3558d613188179559c61d3565140cf389968 # v22
+        with:
+          server_address: smtp.gmail.com
+          server_port: 465
+          username: ${{ secrets.MAIL_USERNAME }}
+          password: ${{ secrets.MAIL_PASSWORD }}
+          subject: "DANDI Compute: the S3 backup needs attention"
+          to: cody.c.baker.phd@gmail.com  # Add more with comma separation (no spaces)
+          from: DANDI Compute <dandi-compute@users.noreply.github.com>
+          body: |
+            The check of the DANDI S3 backup on MIT Engaging found a problem. Job capsules whose blob is not in the mirror fail on a missing input.
+
+            Backup jobs (${{ needs.CheckBackupJobs.result }}):
+            ${{ needs.CheckBackupJobs.outputs.report || 'No report. The check did not run (the runner was offline) or failed before reporting; see the run.' }}
+
+            Mirror growth (${{ needs.CheckMirrorGrowth.result }}):
+            ${{ needs.CheckMirrorGrowth.outputs.report || 'No report; see the run.' }}
+
+            Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+            Dashboard: https://github.com/dandi/backup-status

@@ -4,8 +4,9 @@
 #
 # Usage: record.sh KIND NAME -- COMMAND [ARGS...]
 #
-#   KIND     `logs` for tasks and workflow steps; `monitor` for queue snapshots and `disk` for
-#            disk usage snapshots, the snapshot kinds
+#   KIND     `logs` for tasks and workflow steps; `errors` for the sections of the error report
+#            (launcher/report_errors.sh); `monitor` for queue snapshots and `disk` for disk usage
+#            snapshots, the snapshot kinds
 #   NAME     a short name for the operation, used in the record's directory name
 #
 # The record lands in KIND/{YYYYMMDDTHHMMSS}-NAME/ on the day's branch for its kind

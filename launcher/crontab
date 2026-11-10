@@ -18,8 +18,10 @@
 # Bazel cache from the home directory, recorded under logs/ (see launcher/clean_home.sh).
 0 4 * * 0 /orcd/data/dandi/001/dandi-compute/dandi-compute-runner/launcher/clean_home.sh > /dev/null 2>&1
 
-# Backup processes
-0 22 * * * flock -n /orcd/data/dandi/001/backup/flocks/backup_blobs_batch.lock sbatch --output /dev/null --error=/dev/null /orcd/data/dandi/001/backup/simple-s3-backup/scripts/backup_blobs_batch_deployment.sh
-#0 19 * * 0,3 flock -n /orcd/data/dandi/001/backup/flocks/backup_zarr_batch.lock sbatch --output /dev/null --error=/dev/null /orcd/data/dandi/001/backup/simple-s3-backup/scripts/backup_zarr_batch_deployment.sh  # Zarr was disabled in May 2026
-0 18 * * * flock -n /orcd/data/dandi/001/backup/flocks/backup_nonblobs.lock sbatch --output /dev/null --error=/dev/null /orcd/data/dandi/001/backup/simple-s3-backup/scripts/backup_nonblobs_deployment.sh
-0 6 * * * flock -n /orcd/data/dandi/001/backup/flocks/update_dashboard.lock sbatch --output /dev/null --error=/dev/null /orcd/data/dandi/001/backup/simple-s3-backup/scripts/update_dashboard.sh
+# The S3 backup jobs of simple-s3-backup, each submission recorded under logs/ and each job's own
+# output kept in /orcd/data/dandi/001/backup/logs/ (see launcher/backup.sh). The Check backup
+# workflow emails when one of them fails or the blob mirror stops growing.
+0 22 * * * /orcd/data/dandi/001/dandi-compute/dandi-compute-runner/launcher/backup.sh blobs > /dev/null 2>&1
+#0 19 * * 0,3 /orcd/data/dandi/001/dandi-compute/dandi-compute-runner/launcher/backup.sh zarr > /dev/null 2>&1  # Zarr was disabled in May 2026
+0 18 * * * /orcd/data/dandi/001/dandi-compute/dandi-compute-runner/launcher/backup.sh nonblobs > /dev/null 2>&1
+0 6 * * * /orcd/data/dandi/001/dandi-compute/dandi-compute-runner/launcher/backup.sh dashboard > /dev/null 2>&1
