@@ -89,12 +89,22 @@ The home directory has a quota on both space and number of files (shown in the d
 
 - the Apptainer blobs older than 7 days in `~/.apptainer/cache/blob/blobs/sha256/`
 - every dandi-cli log in `~/.local/state/dandi-cli/log/`
-- everything in Bazel's output root, `~/.cache/bazel/_bazel_$USER/`
 
-Each run is recorded in the global logs under `logs/`, with what each step deleted. A directory that is not there is skipped, and the run exits non-zero if any step failed. To run it by hand from a login node shell (it records itself there too):
+Bazel's output root, `~/.cache/bazel/_bazel_$USER/`, fills with hundreds of thousands of files within hours, so cron runs [`launcher/clean_bazel.sh`](launcher/clean_bazel.sh) for it every 15 minutes (at 7, 22, 37 and 52 past the hour). A run still deleting when the next is due holds a lock in `/orcd/data/dandi/001/dandi-compute/flocks/`, and the next is skipped. Bazel may be running on any node, and deleting what it is using would break that job, so the run deletes only what has been idle for 60 minutes (`IDLE_MINUTES`):
+
+- each output base (one per workspace Bazel ran in, named by a hash) once nothing directly in it or in its `server/` directory has changed for that long; a running Bazel command writes there at least once a minute
+- `install/` (Bazel's own install bases) and `cache/` (its download cache), which every output base uses, only when no output base was kept and they have not changed for that long either
+
+What is idle is deleted even if a program started from it is still running. For each output base, the run also says which workspace it belongs to (from Bazel's `DO_NOT_BUILD_HERE` file), which shows what is running Bazel.
+
+Each run of either script is recorded in the global logs under `logs/` (`clean-home` and `clean-bazel`), with what each step deleted and, for Bazel, what was kept and why. A directory that is not there is skipped, and the run exits non-zero if anything could not be deleted. To run either by hand from a login node shell (they record themselves there too):
 
 ```bash
 /orcd/data/dandi/001/dandi-compute/dandi-compute-runner/launcher/clean_home.sh
+```
+
+```bash
+/orcd/data/dandi/001/dandi-compute/dandi-compute-runner/launcher/clean_bazel.sh
 ```
 
 ## S3 backup
