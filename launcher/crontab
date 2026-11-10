@@ -27,3 +27,8 @@
 0 18 * * * /orcd/data/dandi/001/dandi-compute/dandi-compute-runner/launcher/backup.sh nonblobs > /dev/null 2>&1
 0 6 * * * /orcd/data/dandi/001/dandi-compute/dandi-compute-runner/launcher/backup.sh dashboard > /dev/null 2>&1
 0 10 * * * /orcd/data/dandi/001/dandi-compute/dandi-compute-runner/launcher/backup.sh checksums > /dev/null 2>&1
+
+# Every hour, the ledger of blobs whose checksum did not match the bucket, kept by the checksums job,
+# is copied to the checksum-mismatches branch of the global logs when it has changed (see
+# launcher/publish_checksum_mismatches.sh).
+17 * * * * /orcd/data/dandi/001/dandi-compute/dandi-compute-runner/launcher/publish_checksum_mismatches.sh > /dev/null 2>&1

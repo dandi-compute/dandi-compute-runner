@@ -269,4 +269,5 @@ jobs:
             ${{ needs.CheckMirrorGrowth.outputs.report || 'No report; see the run.' }}
 
             Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+            Checksum mismatches so far: https://github.com/dandi-compute/dandi-compute-global-logs/blob/checksum-mismatches/checksum-mismatches.tsv
             Dashboard: https://github.com/dandi/backup-status
