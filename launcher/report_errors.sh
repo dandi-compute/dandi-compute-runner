@@ -56,6 +56,7 @@ REPRODUCE_WAIT_SECONDS="${REPRODUCE_WAIT_SECONDS:-600}"
 COMMAND_TIMEOUT=300
 MAX_OUTPUT_BYTES=200000
 MAX_WORK_DIRECTORIES=500
+COUNT_TIMEOUT=300
 USER_NAME=$(id -un)
 # What a backup job submitted by cron sees: cron's own few variables and nothing of this job's.
 # The records are public, so they name the runner's user and home directory only by role.
@@ -499,6 +500,20 @@ section_missing_blobs() {
     rm -f "$listing" "$rows"
 }
 
+# count_files DIRECTORY prints the number of files and directories under DIRECTORY, a tab and its
+# path, giving up after COUNT_TIMEOUT seconds with what it counted so far, marked "at least".
+count_files() {
+    [ -d "$1" ] || return 0
+    local count status
+    count=$(timeout "$COUNT_TIMEOUT" find "$1" -xdev 2> /dev/null | wc -l)
+    status=${PIPESTATUS[0]}
+    if [ "$status" -eq 124 ]; then
+        printf '%s\t%s (at least; counting stopped after %s seconds)\n' "$count" "$1" "$COUNT_TIMEOUT"
+    else
+        printf '%s\t%s\n' "$count" "$1"
+    fi
+}
+
 # --- home-usage -----------------------------------------------------------------------------
 
 section_home_usage() {
@@ -511,20 +526,38 @@ section_home_usage() {
     local space_used
     space_used=$(awk '$1 == "HOME" { for (i = 1; i <= NF; i++) if ($i == "|") bar++; else if (bar == 3) { print $i; exit } }' "$report" 2> /dev/null)
     fact home_quota "space ${space_used:-unknown}% used, files ${files_used:-unknown}% used"
-    # A million files take minutes to count, so they are counted once, at low priority and with a
-    # time limit, as in launcher/disk.sh. A count cut short still lists what it reached.
+    # `du` reads every file's attributes, which over a million files on network storage takes over
+    # an hour. Listing names is enough to count files, so each directory is counted with `find`,
+    # one at a time and each for at most COUNT_TIMEOUT seconds, a count cut short marked as such.
+    echo
+    echo "### Files in the usual suspects"
+    local directory
+    for directory in .local/state/dandi-cli/log .apptainer/cache .singularity/cache .cache/bazel .cache/pip \
+        .conda/pkgs .nextflow .local/lib .cache; do
+        count_files "$HOME/$directory"
+    done
+    echo
+    echo "### Files under each top-level entry of the home directory (most first)"
     local counts
     counts=$(mktemp)
-    echo
-    echo "### Directories holding the most files (top 40, three levels down)"
-    timeout 1200 nice -n 19 ionice -c 3 du --inodes -x -d 3 "$HOME" 2> /dev/null | sort -rn > "$counts"
-    [ "${PIPESTATUS[0]}" -eq 124 ] && echo "(cut short after 20 minutes)"
+    for directory in "$HOME"/* "$HOME"/.[!.]*; do
+        [ -d "$directory" ] && [ ! -L "$directory" ] || continue
+        count_files "$directory"
+    done | sort -t$'\t' -k1,1rn > "$counts"
     head -n 40 "$counts"
-    fact home_file_hogs "$(sed -n '2,6p' "$counts")"
+    fact home_file_hogs "$(head -n 5 "$counts")"
+    # One level further down in the directory holding the most.
+    local largest
+    largest=$(head -n 1 "$counts" | cut -f2 | sed "s#^~#$HOME#")
+    if [ -n "$largest" ] && [ -d "$largest" ]; then
+        echo
+        echo "### Inside ${largest/#$HOME/\~} (most first)"
+        for directory in "$largest"/* "$largest"/.[!.]*; do
+            [ -d "$directory" ] && [ ! -L "$directory" ] || continue
+            count_files "$directory"
+        done | sort -t$'\t' -k1,1rn | head -n 20
+    fi
     rm -f "$counts"
-    echo
-    echo "### Directories holding the most space (top 20, two levels down)"
-    timeout 1200 nice -n 19 ionice -c 3 du -x -h -d 2 "$HOME" 2> /dev/null | sort -rh | head -n 20
     local dandi_logs
     dandi_logs=$(find "$HOME/.local/state/dandi-cli/log" -maxdepth 1 -type f 2> /dev/null | wc -l)
     echo
