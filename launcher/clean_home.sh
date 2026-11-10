@@ -7,7 +7,8 @@
 #   - Apptainer's blob cache, of which only the blobs older than a week are deleted
 #   - dandi-cli's logs, one file per invocation, all of them deleted
 #
-# Bazel's output root fills it far faster, so clean_bazel.sh clears that every 15 minutes instead.
+# Bazel's output root fills it far faster, so clean_bazel.sh moves that out of the home directory
+# and clears it every 15 minutes instead.
 #
 # A directory that is not there is skipped. Every step runs even when an earlier one fails, and the
 # script exits non-zero when any of them did.

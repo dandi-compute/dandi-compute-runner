@@ -18,9 +18,9 @@
 # home directory, recorded under logs/ (see launcher/clean_home.sh).
 0 4 * * 0 /orcd/data/dandi/001/dandi-compute/dandi-compute-runner/launcher/clean_home.sh > /dev/null 2>&1
 
-# Every 15 minutes, clear what Bazel is no longer using from its cache in the home directory,
-# recorded under logs/ (see launcher/clean_bazel.sh). A run still deleting when the next is due
-# holds the lock, and the next is skipped.
+# Every 15 minutes, keep ~/.bazelrc pointing Bazel's cache out of the home directory and clear what
+# Bazel is no longer using from it, recorded under logs/ (see launcher/clean_bazel.sh). A run still
+# deleting when the next is due holds the lock, and the next is skipped.
 7-59/15 * * * * flock -n /orcd/data/dandi/001/dandi-compute/flocks/clean_bazel.lock /orcd/data/dandi/001/dandi-compute/dandi-compute-runner/launcher/clean_bazel.sh > /dev/null 2>&1
 
 # The S3 backup jobs of simple-s3-backup, each submission recorded under logs/ and each job's own

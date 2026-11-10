@@ -90,10 +90,14 @@ The home directory has a quota on both space and number of files (shown in the d
 - the Apptainer blobs older than 7 days in `~/.apptainer/cache/blob/blobs/sha256/`
 - every dandi-cli log in `~/.local/state/dandi-cli/log/`
 
-Bazel's output root, `~/.cache/bazel/_bazel_$USER/`, fills with hundreds of thousands of files within hours, so cron runs [`launcher/clean_bazel.sh`](launcher/clean_bazel.sh) for it every 15 minutes (at 7, 22, 37 and 52 past the hour). A run still deleting when the next is due holds a lock in `/orcd/data/dandi/001/dandi-compute/flocks/`, and the next is skipped. Bazel may be running on any node, and deleting what it is using would break that job, so the run deletes only what has been idle for 60 minutes (`IDLE_MINUTES`):
+Something in the pipelines runs Bazel, whose output root fills with hundreds of thousands of files within hours. Cron runs [`launcher/clean_bazel.sh`](launcher/clean_bazel.sh) for it every 15 minutes (at 7, 22, 37 and 52 past the hour). A run still deleting when the next is due holds a lock in `/orcd/data/dandi/001/dandi-compute/flocks/`, and the next is skipped.
 
-- each output base (one per workspace Bazel ran in, named by a hash) once nothing directly in it or in its `server/` directory has changed for that long; a running Bazel command writes there at least once a minute
-- `install/` (Bazel's own install bases) and `cache/` (its download cache), which every output base uses, only when no output base was kept and they have not changed for that long either
+The output root is kept out of the home directory: `~/.bazelrc` is a symbolic link to [`launcher/bazelrc`](launcher/bazelrc), which sets `startup --output_user_root=/orcd/data/dandi/001/dandi-compute/cache/bazel`. Each run makes the link when there is no `~/.bazelrc`. One that is anything else is left alone, and the run fails until it is removed. A container that binds the home directory but not `/orcd/data/dandi/001` sees a dangling link, which Bazel skips, so there Bazel falls back to `~/.cache/bazel/_bazel_$USER/` rather than failing. The run clears both output roots the same way.
+
+Bazel may be running on any node, and deleting what it is using would break that job, so the run deletes only what has been idle for 60 minutes (`IDLE_MINUTES`):
+
+- each output base (one per workspace Bazel ran in, named by a hash) once nothing directly in it or in its `server/` directory has changed for that long; a running Bazel command reports its progress to `command.log` there at least once a minute, even while an action runs without a word
+- `install/` (Bazel's own install bases) and `cache/` (its download cache), which every output base of the same root uses, only when none of those was kept and they have not changed for that long either
 
 What is idle is deleted even if a program started from it is still running. For each output base, the run also says which workspace it belongs to (from Bazel's `DO_NOT_BUILD_HERE` file), which shows what is running Bazel.
 
