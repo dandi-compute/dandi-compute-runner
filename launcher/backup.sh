@@ -2,11 +2,12 @@
 #
 # backup.sh - submit one of the S3 backup jobs of simple-s3-backup.
 #
-# Usage: backup.sh blobs|nonblobs|zarr|dashboard
+# Usage: backup.sh blobs|nonblobs|zarr|dashboard|checksums
 #
 # Run by the crontab on the login node. The jobs mirror the DANDI S3 bucket onto the project
 # partitions, from which every job capsule reads its input, and update the dashboard at
-# https://github.com/dandi/backup-status. Their scripts are those of the simple-s3-backup checkout
+# https://github.com/dandi/backup-status, and `checksums` verifies the content of the blob mirror
+# against the bucket. Their scripts are those of the simple-s3-backup checkout
 # at /orcd/data/dandi/001/backup/simple-s3-backup, which this repository does not manage.
 #
 # Each job writes its output to LOG_DIRECTORY, one file per job or array task named after the job
@@ -53,8 +54,14 @@ case "${1:-}" in
         LOCK=update_dashboard.lock
         LOG_NAME='%x-%j.log'
         ;;
+    checksums)
+        JOB_NAME=DANDI-Verify-Checksums
+        SCRIPT=verify_checksums_batch_deployment.sh
+        LOCK=verify_checksums_batch.lock
+        LOG_NAME='%x-%A_%a.log'
+        ;;
     *)
-        echo "usage: $0 blobs|nonblobs|zarr|dashboard" >&2
+        echo "usage: $0 blobs|nonblobs|zarr|dashboard|checksums" >&2
         exit 2
         ;;
 esac
