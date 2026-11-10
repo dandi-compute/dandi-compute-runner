@@ -6,7 +6,7 @@
 # number of files as well as on space (see disk.sh).
 #
 # ~/.bazelrc is kept a symbolic link to launcher/bazelrc, which moves the output root to
-# /orcd/data/dandi/001/dandi-compute/cache/bazel. The link is made when there is no ~/.bazelrc; one
+# /orcd/data/dandi/001/dandi-compute/work/bazel. The link is made when there is no ~/.bazelrc; one
 # that is something else is left alone, and the run fails until it is removed. Where that path is
 # not reachable, in a container that binds the home directory but not /orcd/data/dandi/001, the
 # link dangles and Bazel falls back to ~/.cache/bazel/_bazel_$USER, so both output roots are
