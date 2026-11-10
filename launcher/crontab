@@ -14,9 +14,14 @@
 # A disk usage snapshot every 30 minutes, recorded under disk/ (see launcher/disk.sh).
 */30 * * * * /bin/bash -l -c '/orcd/data/dandi/001/dandi-compute/dandi-compute-runner/launcher/disk.sh' > /dev/null 2>&1
 
-# Every Sunday at 04:00, clear the Apptainer blobs older than a week, the dandi-cli logs and the
-# Bazel cache from the home directory, recorded under logs/ (see launcher/clean_home.sh).
+# Every Sunday at 04:00, clear the Apptainer blobs older than a week and the dandi-cli logs from the
+# home directory, recorded under logs/ (see launcher/clean_home.sh).
 0 4 * * 0 /orcd/data/dandi/001/dandi-compute/dandi-compute-runner/launcher/clean_home.sh > /dev/null 2>&1
+
+# Every 15 minutes, keep ~/.bazelrc pointing Bazel's cache out of the home directory and clear what
+# Bazel is no longer using from it, recorded under logs/ (see launcher/clean_bazel.sh). A run still
+# deleting when the next is due holds the lock, and the next is skipped.
+7-59/15 * * * * flock -n /orcd/data/dandi/001/dandi-compute/flocks/clean_bazel.lock /orcd/data/dandi/001/dandi-compute/dandi-compute-runner/launcher/clean_bazel.sh > /dev/null 2>&1
 
 # The S3 backup jobs of simple-s3-backup, each submission recorded under logs/ and each job's own
 # output kept in /orcd/data/dandi/001/backup/logs/ (see launcher/backup.sh). The Check backup
