@@ -91,6 +91,47 @@ normalize() {
         -e 's/[0-9]+/<n>/g' | cut -c1-300
 }
 
+# The line of FILE that best says why it failed: the last error-like line, or else its last line.
+error_line() {
+    local line
+    line=$(grep -E 'Error|error|ERROR|Exception|not an existing|No such file|Killed|denied|exceeded|unbound variable|not found' "$1" 2> /dev/null \
+        | grep -v -E '^[[:space:]]*(File "|\^|\+)' | tail -n 1)
+    [ -n "$line" ] || line=$(grep -v -E '^[[:space:]]*$' "$1" 2> /dev/null | tail -n 1)
+    echo "${line:-(empty)}"
+}
+
+# group_errors SOURCES groups the files listed in SOURCES (job name, tab, file) by their error
+# line with what varies masked, most frequent first, with the end of one example of each.
+group_errors() {
+    local sources="$1" lines job_name file line
+    lines=$(mktemp)
+    while IFS=$'\t' read -r job_name file; do
+        line=$(error_line "$file")
+        printf '%s\t%s\t%s\t%s\n' "$(normalize <<< "$line")" "${job_name%%_(*}" "$file" "$line"
+    done < "$sources" > "$lines"
+    if [ ! -s "$lines" ]; then
+        echo "(none found)"
+        fact error_signatures "none found"
+        rm -f "$lines"
+        return 0
+    fi
+    local signatures count signature example
+    signatures=$(cut -f1 "$lines" | sort | uniq -c | sort -rn | head -n 30)
+    while read -r count signature; do
+        echo
+        echo "$count x $signature"
+        echo "  from: $(awk -F'\t' -v s="$signature" '$1 == s { print $2 }' "$lines" | sort | uniq -c | sort -rn \
+            | awk '{ printf "%s%s (%s)", separator, $2, $1; separator = ", " }')"
+        example=$(awk -F'\t' -v s="$signature" '$1 == s { print $3; exit }' "$lines")
+        echo "  e.g. $(awk -F'\t' -v s="$signature" '$1 == s { print $4; exit }' "$lines")"
+        echo "  the end of $example:"
+        tail -n 15 "$example" 2> /dev/null | cut -c1-300 | sed 's/^/    | /'
+    done <<< "$signatures"
+    fact error_signatures "$(head -n 10 <<< "$signatures")"
+    fact missing_input_failures "$(grep -c 'not an existing file or folder' "$lines" || true)"
+    rm -f "$lines"
+}
+
 # --- backup-checkout ------------------------------------------------------------------------
 
 section_backup_checkout() {
@@ -120,6 +161,19 @@ section_backup_checkout() {
     echo "Changed files against HEAD: $changes. Untracked files: $untracked."
     fact checkout_state "HEAD ${head:-unknown}, GitHub main ${github:-unknown}, changed files: $changes, untracked files: $untracked"
     fact checkout_changes "$changes"
+    show "Commits with dates" git -C "$BACKUP_CHECKOUT" log --format='%h %ad %s' --date=iso -10
+    show "When the checkout moved (reflog)" git -C "$BACKUP_CHECKOUT" reflog --date=iso -20
+    # Commits that may exist nowhere but here, so they are kept in full.
+    local base
+    if [ -n "$github" ] && git -C "$BACKUP_CHECKOUT" cat-file -e "$github^{commit}" 2> /dev/null; then
+        base="$github"
+    else
+        base=$(git -C "$BACKUP_CHECKOUT" merge-base HEAD origin/main 2> /dev/null)
+    fi
+    if [ -n "$base" ] && [ "$base" != "$head" ]; then
+        show "Commits of HEAD that are not on main, in full" git -C "$BACKUP_CHECKOUT" log -p --format='commit %H%nDate: %ad%n%n%B' --date=iso "$base..HEAD"
+        fact checkout_commits "$(git -C "$BACKUP_CHECKOUT" log --format='%h %ad %s' --date=short "$base..HEAD" 2> /dev/null)"
+    fi
     show "Changes against HEAD" git -C "$BACKUP_CHECKOUT" diff HEAD
     show "Untracked files" git -C "$BACKUP_CHECKOUT" ls-files --others --exclude-standard
     local script
@@ -194,8 +248,23 @@ PROBE
     echo "[exit $status]"
     local failed_steps
     failed_steps=$(grep '^!!! exit' "$output" | head -n 10)
+    [ "$status" -ne 0 ] && [ -z "$failed_steps" ] && failed_steps="the replay itself exited $status: $(grep -v '^+' "$output" | tail -n 1)"
     fact setup_failures "${failed_steps:-none}"
     fact setup_output "$(head -n 200 "$output")"
+
+    # `set -e` or `set -u` in the script ends the replay at the first problem. Without them, the
+    # rest of the setup shows whether anything else would fail once that one is fixed.
+    if grep -qE '^[[:space:]]*set[[:space:]]+-[a-z]*[eu]' "$probe"; then
+        sed -i -E 's/^[[:space:]]*set[[:space:]]+-[a-z]*[eu][a-z]*([[:space:]]+(-o[[:space:]]+)?pipefail)?[[:space:]]*$/: removed for this replay/' "$probe"
+        echo
+        echo "### Replayed again without the script's own set -e and set -u"
+        timeout "$COMMAND_TIMEOUT" "${CRON_ENVIRONMENT[@]}" /bin/bash "$probe" > "$output" 2>&1
+        status=$?
+        head -c "$MAX_OUTPUT_BYTES" "$output"
+        echo "[exit $status]"
+        failed_steps=$(grep '^!!! exit' "$output" | head -n 10)
+        fact setup_failures_without_set_options "${failed_steps:-none}"
+    fi
     rm -f "$probe" "$output"
 
     echo
@@ -281,7 +350,7 @@ section_backup_reproduce() {
     # rather than running twice.
     job_id=$("${CRON_ENVIRONMENT[@]}" "$sbatch_path" --parsable --array="$REPRODUCE_TASK" \
         --job-name=DANDI-Backup-Blobs-Diagnose \
-        --output="$BACKUP_LOG_DIRECTORY/%x-%A_%a.log" "$traced" 2>&1)
+        --output="$BACKUP_LOG_DIRECTORY/%x-%A_%a.log" --error="$BACKUP_LOG_DIRECTORY/%x-%A_%a.log" "$traced" 2>&1)
     local status=$?
     rm -f "$traced"
     echo "sbatch exited $status: $job_id"
@@ -348,38 +417,29 @@ section_slurm_failures() {
     fact slurm_failure_groups "$(awk -F'|' '{ split($3, state, " "); count[$2 " (" state[1] ", exit " $4 ")"]++ }
         END { for (key in count) printf "%d  %s\n", count[key], key }' <<< "$failures" | sort -rn | head -n 10)"
 
-    # Nextflow submits each step of an AIND capsule as a job whose working directory is the task's
-    # work directory, where the step's error is in .command.err.
+    # Where each failed job left its output: a Nextflow task's .command.err in its work directory
+    # (Nextflow runs every step of an AIND capsule as a job there), a dispatch task's log under
+    # processing/derivatives/logs/, or a backup task's log.
     echo
-    echo "### The errors failed Nextflow tasks ended with"
-    local signatures examples work_directory job_name line seen=0
-    signatures=$(mktemp)
-    examples=$(mktemp)
-    while IFS='|' read -r _ job_name _ _ _ _ _ work_directory; do
-        [ -f "$work_directory/.command.err" ] || continue
+    echo "### The errors failed jobs ended with"
+    local sources job_id job_name work_directory log_file seen=0
+    sources=$(mktemp)
+    while IFS='|' read -r job_id job_name _ _ _ _ _ work_directory; do
+        [ -n "$job_id" ] || continue
         seen=$((seen + 1))
         [ "$seen" -gt "$MAX_WORK_DIRECTORIES" ] && break
-        line=$(grep -E 'Error|error|Exception|not an existing|No such file|Killed|denied|exceeded' "$work_directory/.command.err" 2> /dev/null \
-            | grep -v -E '^\s*(File|\^)' | tail -n 1)
-        [ -n "$line" ] || line=$(grep . "$work_directory/.command.err" | tail -n 1)
-        [ -n "$line" ] || line="(empty .command.err)"
-        printf '%s\t%s\n' "$(normalize <<< "$line")" "$job_name" >> "$signatures"
-        printf '%s\t%s\t%s\n' "$(normalize <<< "$line")" "$work_directory" "$line" >> "$examples"
-    done < <(tac <<< "$failures")
-    echo "Read the .command.err of $seen failed Nextflow tasks (newest first, at most $MAX_WORK_DIRECTORIES)."
-    if [ -s "$signatures" ]; then
-        cut -f1 "$signatures" | sort | uniq -c | sort -rn | head -n 30 | while read -r count signature; do
-            echo
-            echo "$count x $signature"
-            echo "  steps: $(awk -F'\t' -v s="$signature" '$1 == s { print $2 }' "$signatures" | sed -E 's/_\(.*//' | sort | uniq -c | sort -rn | awk '{ printf "%s%s (%s)", sep, $2, $1; sep = ", " }')"
-            awk -F'\t' -v s="$signature" '$1 == s { print "  e.g. " $3; print "  in " $2; exit }' "$examples"
+        if [ -f "$work_directory/.command.err" ]; then
+            printf '%s\t%s\n' "$job_name" "$work_directory/.command.err"
+            continue
+        fi
+        for log_file in "$BASE_DIRECTORY/processing/derivatives/logs/$job_name/"*"-${job_id}.log" \
+            "$BACKUP_LOG_DIRECTORY/"*"${job_id}."*; do
+            [ -f "$log_file" ] && printf '%s\t%s\n' "$job_name" "$log_file"
         done
-        fact error_signatures "$(cut -f1 "$signatures" | sort | uniq -c | sort -rn | head -n 10)"
-        fact missing_input_failures "$(grep -c 'not an existing file or folder' "$examples" || true)"
-    else
-        fact error_signatures "none read"
-    fi
-    rm -f "$signatures" "$examples"
+    done < <(tac <<< "$failures") > "$sources"
+    echo "Found the output of $(cut -f2 "$sources" | sort -u | grep -c . || true) of the newest $((seen > MAX_WORK_DIRECTORIES ? MAX_WORK_DIRECTORIES : seen)) failed jobs."
+    group_errors "$sources"
+    rm -f "$sources"
 
     echo
     echo "### The other failed jobs, newest first"
@@ -461,6 +521,8 @@ until_first_failure() {
 likely_cause() {
     local text="$1"
     case "$text" in
+        *"unbound variable"*)
+            echo "The script runs with \`set -u\`, and a file it sources reads a variable cron does not set, so bash stops the job at once: $(grep -m 1 'unbound variable' <<< "$text")" ;;
         *"profile.d/modules.sh"*"No such file"*)
             echo "The module system's setup script is not on the node the job ran on." ;;
         *EnvironmentNameNotFound* | *EnvironmentLocationNotFound* | *"Could not find conda environment"* | *"Not a conda environment"*)
@@ -497,6 +559,8 @@ section_diagnosis() {
         echo "- Mirror writable: $(read_fact mirror_writable)"
         echo "- Setup steps that failed when replayed in cron's environment:"
         read_fact setup_failures none | sed 's/^/    /'
+        echo "- Setup steps that failed when replayed again without the script's set -e and set -u:"
+        read_fact setup_failures_without_set_options "(not replayed: the script sets neither)" | sed 's/^/    /'
         echo "- Reproduction: $(read_fact reproduce)"
         local log setup failure cause
         log=$(read_fact reproduce_log_head '')
@@ -520,6 +584,10 @@ section_diagnosis() {
         if [ "$(read_fact checkout_changes 0)" != 0 ]; then
             echo "- The checkout has local changes that are not on GitHub (see backup-checkout)."
         fi
+        if [ -n "$(read_fact checkout_commits '')" ]; then
+            echo "- The checkout runs commits that are not on GitHub's main (in full in backup-checkout):"
+            read_fact checkout_commits '' | sed 's/^/    /'
+        fi
         echo
         echo "### Job capsules"
         echo "- Inputs: $(read_fact missing_blobs)"
@@ -527,7 +595,7 @@ section_diagnosis() {
         echo "- SLURM: $(read_fact slurm_failures)"
         echo "- Most frequent failures:"
         read_fact slurm_failure_groups none | sed 's/^/    /'
-        echo "- Most frequent errors of failed Nextflow tasks:"
+        echo "- Most frequent errors of failed jobs:"
         read_fact error_signatures none | sed 's/^/    /'
     } > "$report"
     cat "$report"

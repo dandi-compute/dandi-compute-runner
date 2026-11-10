@@ -66,8 +66,11 @@ fi
 deleted=$(find "$LOG_DIRECTORY" -maxdepth 1 -type f -name '*.log' -mtime +"$LOG_RETENTION_DAYS" -delete -print | wc -l)
 echo "Deleted $deleted backup logs older than $LOG_RETENTION_DAYS days from $LOG_DIRECTORY."
 
+# --error as well as --output, since a script's own #SBATCH --error would otherwise still send
+# its stderr, where its errors go, somewhere else.
 flock -n "$LOCK_DIRECTORY/$LOCK" \
-    sbatch --job-name="$JOB_NAME" --output="$LOG_DIRECTORY/$LOG_NAME" "$SCRIPT_DIRECTORY/$SCRIPT"
+    sbatch --job-name="$JOB_NAME" --output="$LOG_DIRECTORY/$LOG_NAME" --error="$LOG_DIRECTORY/$LOG_NAME" \
+    "$SCRIPT_DIRECTORY/$SCRIPT"
 status=$?
 if [ "$status" -ne 0 ]; then
     echo "Submitting $JOB_NAME failed (exit $status)." >&2
