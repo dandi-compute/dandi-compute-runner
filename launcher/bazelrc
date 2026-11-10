@@ -1,0 +1,8 @@
+# The cluster user's ~/.bazelrc, a symbolic link to this file that launcher/clean_bazel.sh puts in
+# place. It moves Bazel's output root out of the home directory, whose quota on the number of
+# files Bazel used to fill within hours, to work/ in the dandi-compute directory on the project
+# storage. `dandicompute clean --work` keeps work/bazel, as it does work/apptainer_cache.
+#
+# A container that binds the home directory but not /orcd/data/dandi/001 sees a dangling link here,
+# which Bazel skips, so Bazel falls back to ~/.cache/bazel there rather than failing.
+startup --output_user_root=/orcd/data/dandi/001/dandi-compute/work/bazel
