@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       directory:
-        description: "Which cloned directory (under the cluster data root) to pull, or `all` for every one."
+        description: "Which checkout on the cluster to pull, or `all` for every one."
         required: true
         type: choice
         default: all
@@ -13,8 +13,9 @@ on:
           - dandi-compute-core
           - dandi-compute-runner
           - aind-ephys-pipeline
+          - simple-s3-backup
       reinstall:
-        description: "Run `pip install -e` on each pulled directory (only applies to installable Python packages)."
+        description: "Run `pip install -e` on each pulled directory (only applies to installable Python packages; simple-s3-backup goes into its own environment)."
         required: false
         type: boolean
         default: true
@@ -43,13 +44,29 @@ jobs:
       run:
         shell: bash --noprofile --norc -c "test -x /orcd/data/dandi/001/dandi-compute/dandi-compute-runner/launcher/record.sh && exec /orcd/data/dandi/001/dandi-compute/dandi-compute-runner/launcher/record.sh logs update-codebase -- bash --noprofile --norc -eo pipefail $0; echo record.sh not found, running unrecorded >&2; exec bash --noprofile --norc -eo pipefail $0" {0}
     env:
-      DIRECTORIES: ${{ inputs.directory == 'all' && 'dandi-compute-core dandi-compute-runner aind-ephys-pipeline' || inputs.directory }}
+      DIRECTORIES: ${{ inputs.directory == 'all' && 'dandi-compute-core dandi-compute-runner aind-ephys-pipeline simple-s3-backup' || inputs.directory }}
+      # The checkout of https://github.com/dandi/simple-s3-backup whose scripts the crontab's
+      # backup jobs submit (see launcher/backup.sh), and the environment they run it from.
+      BACKUP_CHECKOUT: /orcd/data/dandi/001/backup/simple-s3-backup
+      BACKUP_ENVIRONMENT: /orcd/data/dandi/001/environments/name-s3+backup_env
 
     steps:
       - name: Pull codebase
         working-directory: /orcd/data/dandi/001/dandi-compute
         run: |
           for directory in $DIRECTORIES; do
+            if [ "$directory" = simple-s3-backup ]; then
+              # The backup jobs run whatever this checkout holds, so it is always put on main, even
+              # when someone checked out another branch there by hand. That branch stays, unchanged.
+              # From June to November 2026 an unmerged branch checked out here stopped the blob
+              # backup without anyone knowing.
+              echo "Putting $BACKUP_CHECKOUT on main"
+              git -C "$BACKUP_CHECKOUT" fetch --prune origin
+              previous=$(git -C "$BACKUP_CHECKOUT" rev-parse --abbrev-ref HEAD)
+              git -C "$BACKUP_CHECKOUT" checkout --force -B main origin/main
+              echo "Was on ${previous}; now on main at $(git -C "$BACKUP_CHECKOUT" log -1 --format='%h %s')."
+              continue
+            fi
             echo "Pulling ./$directory/"
             git -C "./$directory/" fetch --tags origin
             # A detached checkout (aind-ephys-pipeline sits on whichever tag the last job checked out)
@@ -120,7 +137,10 @@ jobs:
         working-directory: /orcd/data/dandi/001/dandi-compute
         run: |
           for directory in $DIRECTORIES; do
-            if [ -f "./$directory/pyproject.toml" ] || [ -f "./$directory/setup.py" ]; then
+            if [ "$directory" = simple-s3-backup ]; then
+              # Into the backup jobs' own environment, not the runner's.
+              "$BACKUP_ENVIRONMENT/bin/pip" install -e "$BACKUP_CHECKOUT"
+            elif [ -f "./$directory/pyproject.toml" ] || [ -f "./$directory/setup.py" ]; then
               pip install -e "./$directory/"
             else
               echo "No installable Python package found in ./$directory/; skipping reinstall."

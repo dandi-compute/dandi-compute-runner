@@ -99,7 +99,7 @@ Each run is recorded in the global logs under `logs/`, with what each step delet
 
 ## S3 backup
 
-The cluster keeps a mirror of the DANDI S3 bucket on the project partitions, and every job capsule reads its input blob from it. The jobs that keep it up to date come from [simple-s3-backup](https://github.com/dandi/simple-s3-backup), checked out at `/orcd/data/dandi/001/backup/simple-s3-backup`. This repository does not update that checkout. The crontab submits the jobs through [`launcher/backup.sh`](launcher/backup.sh), which names them:
+The cluster keeps a mirror of the DANDI S3 bucket on the project partitions, and every job capsule reads its input blob from it. The jobs that keep it up to date come from [simple-s3-backup](https://github.com/dandi/simple-s3-backup), checked out at `/orcd/data/dandi/001/backup/simple-s3-backup` and installed in the `name-s3+backup_env` environment. When run for `simple-s3-backup` or `all`, the [Update codebase](https://github.com/dandi-compute/dandi-compute-runner/actions/workflows/update-codebase.yml) workflow puts that checkout on `main` and reinstalls it there, whatever branch was checked out by hand. An unmerged branch checked out there stopped the blob backup from June to November 2026. The branch it moves off is left as it was. The crontab submits the jobs through [`launcher/backup.sh`](launcher/backup.sh), which names them:
 
 | Job | Cron (login node time) | What it does |
 |---|---|---|
