@@ -64,7 +64,7 @@ The runner is usually offline only briefly, between the end of its 12-hour Slurm
 ## Global logs
 
 Everything that runs on the cluster outside a job capsule is recorded in
-[dandi-compute-global-logs](https://github.com/dandi-compute/dandi-compute-global-logs), checked out at `/orcd/data/dandi/001/dandi-compute/dandi-compute-global-logs`. That covers every step of the self-hosted workflows, the cron trigger for dispatching, a `squeue` snapshot every 5 minutes and a disk usage snapshot every 30 minutes ([`launcher/disk.sh`](launcher/disk.sh): `df` for the DANDI project directories, then the home directory's quota report from `~/orcd/.quota`, the one shown at login, with its usage and limits on space and on the number of files; `df` of the home directory would only show the filesystem it shares with every user). The logs of job capsules themselves stay with each capsule and go to DANDI with it.
+[dandi-compute-global-logs](https://github.com/dandi-compute/dandi-compute-global-logs), checked out at `/orcd/data/dandi/001/dandi-compute/dandi-compute-global-logs`. That covers every step of the self-hosted workflows, the cron trigger for dispatching, the submissions of the [S3 backup](#s3-backup) jobs, a `squeue` snapshot every 5 minutes and a disk usage snapshot every 30 minutes ([`launcher/disk.sh`](launcher/disk.sh): `df` for the DANDI project directories, then the home directory's quota report from `~/orcd/.quota`, the one shown at login, with its usage and limits on space and on the number of files; `df` of the home directory would only show the filesystem it shares with every user). The logs of job capsules themselves stay with each capsule and go to DANDI with it.
 
 [`launcher/record.sh`](launcher/record.sh) does the recording: `record.sh KIND NAME -- COMMAND...` runs the command and records it on that day's branch for its kind (`logs/YYYY-MM-DD`, `monitor/YYYY-MM-DD` or `disk/YYYY-MM-DD`, so the kinds update independently), under `logs/{timestamp}-{name}/` or, for the snapshot kinds and grouped by hour, `monitor/{HH}/{timestamp}-squeue/` and `disk/{HH}/{timestamp}-usage/`. A snapshot also writes its path relative to its kind's directory (`{HH}/{timestamp}-{name}`) to that kind's `LATEST` (`monitor/LATEST`, `disk/LATEST`), so the newest one can be looked up without listing the directory. Once a snapshot's day branch is on GitHub, it also points the persistent `monitor/latest` or `disk/latest` branch at that day: its one file, `LATEST`, names the newest day branch of that kind, so the newest snapshot can be found even on a day with no branch, such as just after midnight or while the snapshots are down. Only each day's first snapshot changes it, and it never moves back to an earlier day.
 
@@ -96,6 +96,27 @@ Each run is recorded in the global logs under `logs/`, with what each step delet
 ```bash
 /orcd/data/dandi/001/dandi-compute/dandi-compute-runner/launcher/clean_home.sh
 ```
+
+## S3 backup
+
+The cluster keeps a mirror of the DANDI S3 bucket on the project partitions, and every job capsule reads its input blob from it. The jobs that keep it up to date come from [simple-s3-backup](https://github.com/dandi/simple-s3-backup), checked out at `/orcd/data/dandi/001/backup/simple-s3-backup`. This repository does not update that checkout. The crontab submits the jobs through [`launcher/backup.sh`](launcher/backup.sh), which names them:
+
+| Job | Cron (login node time) | What it does |
+|---|---|---|
+| `DANDI-Backup-Blobs` | daily at 22:00 | Copies new blobs, in a 16-task array with one task per first hex digit of the content ID |
+| `DANDI-Backup-Nonblobs` | daily at 18:00 | Copies everything outside `blobs/` and `zarr/` |
+| `DANDI-Update-Backup-Dashboard` | daily at 06:00 | Updates the [backup-status](https://github.com/dandi/backup-status) dashboard |
+
+The Zarr backup (`backup.sh zarr`) has been disabled since May 2026.
+
+Each submission is recorded in the global logs under `logs/{timestamp}-backup-{kind}/`, with the job ID `sbatch` gave it. Each job writes its own output to `/orcd/data/dandi/001/backup/logs/{job name}-{job ID}.log`, or `{job name}-{array job}_{task}.log` for the arrays. Logs older than 30 days are deleted at the next submission.
+
+The [Check backup](https://github.com/dandi-compute/dandi-compute-runner/actions/workflows/check-backup.yml) workflow checks the backup every day at 16:37 UTC and emails when it finds a problem.
+
+- **Check backup jobs** runs `sacct` on the runner for the jobs above. It fails when one of them was not submitted in the last 24 hours, or when a task of one ended in that time as `FAILED`, `OUT_OF_MEMORY`, `NODE_FAIL`, `BOOT_FAIL` or `DEADLINE`. The email then shows the end of the first two failed tasks' logs. A task that timed out, was preempted or was cancelled only gives a warning. The check is skipped while the runner is offline.
+- **Check mirror growth** runs on a GitHub-hosted runner and reads the history of backup-status. It fails when the dashboard's count of mirrored blobs has not grown in 3 days while the bucket's has. That catches a backup that stops copying without any task failing.
+
+The email goes out on every failed run, so at most once a day. backup-status has checks of its own too, which email when a partition is over 85% full or the dashboard has not been updated for 3 days.
 
 ## Queue state
 
