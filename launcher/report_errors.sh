@@ -511,12 +511,20 @@ section_home_usage() {
     local space_used
     space_used=$(awk '$1 == "HOME" { for (i = 1; i <= NF; i++) if ($i == "|") bar++; else if (bar == 3) { print $i; exit } }' "$report" 2> /dev/null)
     fact home_quota "space ${space_used:-unknown}% used, files ${files_used:-unknown}% used"
-    # Low priority and bounded, as in launcher/disk.sh.
-    show "Directories holding the most files (top 40, three levels down)" \
-        bash -c 'nice -n 19 ionice -c 3 du --inodes -x -d 3 ~ 2> /dev/null | sort -rn | head -n 40'
-    show "Directories holding the most space (top 20, two levels down)" \
-        bash -c 'nice -n 19 ionice -c 3 du -x -h -d 2 ~ 2> /dev/null | sort -rh | head -n 20'
-    fact home_file_hogs "$(nice -n 19 du --inodes -x -d 3 "$HOME" 2> /dev/null | sort -rn | sed -n '2,6p')"
+    # A million files take minutes to count, so they are counted once, at low priority and with a
+    # time limit, as in launcher/disk.sh. A count cut short still lists what it reached.
+    local counts
+    counts=$(mktemp)
+    echo
+    echo "### Directories holding the most files (top 40, three levels down)"
+    timeout 1200 nice -n 19 ionice -c 3 du --inodes -x -d 3 "$HOME" 2> /dev/null | sort -rn > "$counts"
+    [ "${PIPESTATUS[0]}" -eq 124 ] && echo "(cut short after 20 minutes)"
+    head -n 40 "$counts"
+    fact home_file_hogs "$(sed -n '2,6p' "$counts")"
+    rm -f "$counts"
+    echo
+    echo "### Directories holding the most space (top 20, two levels down)"
+    timeout 1200 nice -n 19 ionice -c 3 du -x -h -d 2 "$HOME" 2> /dev/null | sort -rh | head -n 20
     local dandi_logs
     dandi_logs=$(find "$HOME/.local/state/dandi-cli/log" -maxdepth 1 -type f 2> /dev/null | wc -l)
     echo
