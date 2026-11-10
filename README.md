@@ -120,7 +120,7 @@ The email goes out on every failed run, so at most once a day. backup-status has
 
 ## Error reports
 
-The [Report errors](https://github.com/dandi-compute/dandi-compute-runner/actions/workflows/report-errors.yml) workflow records what is going wrong on the cluster in the global logs, under `errors/` on the day's `errors/YYYY-MM-DD` branch, so it can be read without a shell on the cluster. It runs every day at 15:07 UTC, by hand, and on pull requests that change it. [`launcher/report_errors.sh`](launcher/report_errors.sh) makes each section a record of its own, `errors/{timestamp}-{section}/`.
+The [Report errors](https://github.com/dandi-compute/dandi-compute-runner/actions/workflows/report-errors.yml) workflow records what is going wrong on the cluster in the global logs, under `errors/` on the day's `errors/YYYY-MM-DD` branch, so it can be read without a shell on the cluster. It runs every day at 15:07 UTC and by hand. A run takes 20 to 30 minutes and holds the runner, so it does not run on pull requests. To try a change to it before merging, dispatch it on the pull request's branch, which runs that branch's copy of the workflow and the script. [`launcher/report_errors.sh`](launcher/report_errors.sh) makes each section a record of its own, `errors/{timestamp}-{section}/`.
 
 | Section | What it records |
 |---|---|

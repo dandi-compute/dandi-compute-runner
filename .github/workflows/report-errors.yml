@@ -8,10 +8,12 @@ name: Report errors
 # blob is missing, and what fills the home directory's quota. The last, diagnosis, says what the others point to, and is
 # also this run's summary.
 #
-# It runs every day, by hand, and on pull requests that change it, so a change to the report is
-# seen working before it is merged. Every run but the scheduled one also submits one task of the
-# blob backup the way cron does, traced, to see how it fails. Nothing here fails the run or sends
-# email: the Check backup workflow does the alerting.
+# It runs every day and by hand. A run takes 20 to 30 minutes and holds the cluster's only runner,
+# so it does not run on pull requests. To try a change to it before merging, dispatch it on the
+# pull request's branch, which runs that branch's copy of the workflow and of the script. Every
+# run but the scheduled one also submits one task of the blob backup the way cron does, traced, to
+# see how it fails. Nothing here fails the run or sends email: the Check backup workflow does the
+# alerting.
 
 on:
   workflow_dispatch:
@@ -22,10 +24,6 @@ on:
         default: true
   schedule:
     - cron: "7 15 * * *"
-  pull_request:
-    paths:
-      - .github/workflows/report-errors.yml
-      - launcher/report_errors.sh
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -55,9 +53,7 @@ jobs:
 
   ReportErrors:
     needs: CheckEngaging
-    # Pull requests from forks are disabled in this repository; this keeps one off the cluster
-    # should that ever change.
-    if: ${{ needs.CheckEngaging.outputs.online == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+    if: ${{ needs.CheckEngaging.outputs.online == 'true' }}
     name: Report errors
     runs-on: [self-hosted, mit, engaging, submitter]
     timeout-minutes: 120
