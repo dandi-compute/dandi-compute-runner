@@ -4,8 +4,8 @@ name: Report errors
 # day's errors/YYYY-MM-DD branch, so it can be read without a shell on the cluster. Each section of
 # launcher/report_errors.sh is a record of its own: the simple-s3-backup checkout and the crontab,
 # the blob backup's setup replayed in cron's environment, one blob backup task traced, the jobs
-# that failed in the last week with the errors their Nextflow tasks ended with, and the job
-# capsules whose input blob is missing. The last, diagnosis, says what the others point to, and is
+# that failed in the last week grouped by the error they ended with, the job capsules whose input
+# blob is missing, and what fills the home directory's quota. The last, diagnosis, says what the others point to, and is
 # also this run's summary.
 #
 # It runs every day, by hand, and on pull requests that change it, so a change to the report is
@@ -92,6 +92,10 @@ jobs:
       - name: Job capsules whose input blob is missing
         continue-on-error: true
         run: bash launcher/report_errors.sh missing-blobs
+
+      - name: The home directory's quota and what fills it
+        continue-on-error: true
+        run: bash launcher/report_errors.sh home-usage
 
       - name: Diagnosis
         run: bash launcher/report_errors.sh diagnosis

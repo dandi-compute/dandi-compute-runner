@@ -17,6 +17,8 @@
 #   slurm-failures      every job of this user that did not complete in the last DAYS days, grouped
 #                       by name and state, and the errors their Nextflow tasks ended with
 #   missing-blobs       job capsules prepared on the cluster whose input blob is not in the mirror
+#   home-usage          the home directory's quota, and which of its directories hold the most files
+#                       and space, since every job of this user writes there
 #   diagnosis           what the sections above point to
 #
 # The sections share what they find through files in ERRORS_STATE_DIRECTORY, which diagnosis reads,
@@ -94,8 +96,8 @@ normalize() {
 # The line of FILE that best says why it failed: the last error-like line, or else its last line.
 error_line() {
     local line
-    line=$(grep -E 'Error|error|ERROR|Exception|not an existing|No such file|Killed|denied|exceeded|unbound variable|not found' "$1" 2> /dev/null \
-        | grep -v -E '^[[:space:]]*(File "|\^|\+)' | tail -n 1)
+    line=$(grep -E 'Error|error|ERROR|Exception|NotFound|Not a conda|not an existing|No such file|Killed|denied|exceeded|unbound variable|not found' "$1" 2> /dev/null \
+        | grep -v -E '^[[:space:]]*(File "|\^|\+)|^PATH[[:space:]]+SIZE[[:space:]]+ERRORS' | tail -n 1)
     [ -n "$line" ] || line=$(grep -v -E '^[[:space:]]*$' "$1" 2> /dev/null | tail -n 1)
     echo "${line:-(empty)}"
 }
@@ -497,6 +499,31 @@ section_missing_blobs() {
     rm -f "$listing" "$rows"
 }
 
+# --- home-usage -----------------------------------------------------------------------------
+
+section_home_usage() {
+    echo "## The home directory"
+    # ORCD writes the quota report shown at login every 30 minutes; space and the number of files
+    # each have a limit, and every write fails once either is reached.
+    local report="$HOME/orcd/.quota" files_used
+    show "Quota report" cat "$report"
+    files_used=$(awk '$1 == "HOME" { for (i = 1; i <= NF; i++) if ($i == "|") bar++; else if (bar == 6) { print $i; exit } }' "$report" 2> /dev/null)
+    local space_used
+    space_used=$(awk '$1 == "HOME" { for (i = 1; i <= NF; i++) if ($i == "|") bar++; else if (bar == 3) { print $i; exit } }' "$report" 2> /dev/null)
+    fact home_quota "space ${space_used:-unknown}% used, files ${files_used:-unknown}% used"
+    # Low priority and bounded, as in launcher/disk.sh.
+    show "Directories holding the most files (top 40, three levels down)" \
+        bash -c 'nice -n 19 ionice -c 3 du --inodes -x -d 3 ~ 2> /dev/null | sort -rn | head -n 40'
+    show "Directories holding the most space (top 20, two levels down)" \
+        bash -c 'nice -n 19 ionice -c 3 du -x -h -d 2 ~ 2> /dev/null | sort -rh | head -n 20'
+    fact home_file_hogs "$(nice -n 19 du --inodes -x -d 3 "$HOME" 2> /dev/null | sort -rn | sed -n '2,6p')"
+    local dandi_logs
+    dandi_logs=$(find "$HOME/.local/state/dandi-cli/log" -maxdepth 1 -type f 2> /dev/null | wc -l)
+    echo
+    echo "dandi-cli log files: $dandi_logs"
+    fact dandi_cli_logs "$dandi_logs"
+}
+
 # --- diagnosis ------------------------------------------------------------------------------
 
 # The first step the ERR traps reported failing in TEXT ("!!! exit N from: COMMAND"), with the
@@ -589,6 +616,12 @@ section_diagnosis() {
             read_fact checkout_commits '' | sed 's/^/    /'
         fi
         echo
+        echo "### The home directory"
+        echo "- Quota: $(read_fact home_quota)"
+        echo "- dandi-cli log files: $(read_fact dandi_cli_logs)"
+        echo "- Directories holding the most files:"
+        read_fact home_file_hogs none | sed 's/^/    /'
+        echo
         echo "### Job capsules"
         echo "- Inputs: $(read_fact missing_blobs)"
         echo "- Nextflow tasks that failed on a missing input: $(read_fact missing_input_failures)"
@@ -615,9 +648,10 @@ case "$SECTION" in
     backup-reproduce) section_backup_reproduce 2>&1 | mask ;;
     slurm-failures) section_slurm_failures 2>&1 | mask ;;
     missing-blobs) section_missing_blobs 2>&1 | mask ;;
+    home-usage) section_home_usage 2>&1 | mask ;;
     diagnosis) section_diagnosis 2>&1 | mask ;;
     *)
-        echo "usage: $0 backup-checkout|backup-environment|backup-reproduce|slurm-failures|missing-blobs|diagnosis" >&2
+        echo "usage: $0 backup-checkout|backup-environment|backup-reproduce|slurm-failures|missing-blobs|home-usage|diagnosis" >&2
         exit 2
         ;;
 esac
