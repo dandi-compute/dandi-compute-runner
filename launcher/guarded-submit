@@ -5,7 +5,8 @@
 # Usage: guarded-submit [-n MAX_PD] [-N JOB_NAME] [-u USER] [-s STATE] [-q] -- CMD [ARGS...]
 #
 # Options:
-#   -n MAX_PD   Max pending jobs allowed before skipping (default: 10)
+#   -n MAX_PD   Max pending jobs allowed before skipping (default: 10); 0 turns the
+#               threshold off, so only -N decides
 #   -N JOB_NAME Skip if a job with this name is already pending or running, so
 #               a job waiting in the queue is not submitted again every minute
 #   -u USER     User to check (default: current user via --me)
@@ -59,12 +60,13 @@ if [ -n "$JOB_NAME" ]; then
     fi
 fi
 
-# shellcheck disable=SC2086
-count=$(squeue $USER_FILTER -h -t "$STATE" -o %i | wc -l)
-
-if [ "$count" -ge "$MAX_PD" ]; then
-    [ "$QUIET" -eq 1 ] || echo "$(date): $count jobs in state $STATE (>= $MAX_PD), skipping: $*"
-    exit 0
+if [ "$MAX_PD" -gt 0 ]; then
+    # shellcheck disable=SC2086
+    count=$(squeue $USER_FILTER -h -t "$STATE" -o %i | wc -l)
+    if [ "$count" -ge "$MAX_PD" ]; then
+        [ "$QUIET" -eq 1 ] || echo "$(date): $count jobs in state $STATE (>= $MAX_PD), skipping: $*"
+        exit 0
+    fi
 fi
 
 if [ "$JITTER" -gt 0 ]; then

@@ -6,7 +6,11 @@
 0 0 * * * /orcd/data/dandi/001/dandi-compute/dandi-compute-runner/launcher/record.sh logs create-trigger -- /orcd/data/dandi/001/dandi-compute/dandi-compute-runner/launcher/create_github_action_cron.sh > /dev/null 2>&1
 
 # For whatever reason, this particular job is sensitive to the usage of `/bin/bash -l` in order to 'behave properly'. Otherwise the SLURM job does run, the self-hosted runner is active, but the conda init does not trigger and so no environment is found.
-*/1 * * * * /bin/bash -l -c 'flock -n /orcd/data/dandi/001/dandi-compute/flocks/submitter.lock -c "/orcd/data/dandi/001/dandi-compute/dandi-compute-runner/launcher/guarded-submit -N DANDI-Compute-Submitter -- sbatch --output /dev/null --error=/dev/null /orcd/data/dandi/001/dandi-compute/dandi-compute-runner/launcher/launch_submitter.sh" || echo "$(date): lock held, skipping submit"' > /dev/null 2>&1
+# -N alone keeps it from queueing a second runner job; -n 0 turns off guarded-submit's limit of 10
+# pending jobs of this user, which the job capsules waiting on priority and the throttled tasks of
+# DANDI-Verify-Checksums reach on their own. With it, the runner reached its 12-hour limit at 09:08
+# on 2026-11-10 and was not relaunched, and with the runner went the Refresh crontab workflow.
+*/1 * * * * /bin/bash -l -c 'flock -n /orcd/data/dandi/001/dandi-compute/flocks/submitter.lock -c "/orcd/data/dandi/001/dandi-compute/dandi-compute-runner/launcher/guarded-submit -n 0 -N DANDI-Compute-Submitter -- sbatch --output /dev/null --error=/dev/null /orcd/data/dandi/001/dandi-compute/dandi-compute-runner/launcher/launch_submitter.sh" || echo "$(date): lock held, skipping submit"' > /dev/null 2>&1
 
 # A squeue snapshot every 5 minutes, recorded under monitor/ (see launcher/monitor.sh).
 */5 * * * * /bin/bash -l -c '/orcd/data/dandi/001/dandi-compute/dandi-compute-runner/launcher/monitor.sh' > /dev/null 2>&1
