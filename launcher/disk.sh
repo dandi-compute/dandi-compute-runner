@@ -6,10 +6,13 @@
 # dandi-compute-page shows the newest one. Day branches are ephemeral, so the snapshots never pile
 # up anywhere that matters.
 #
-# The snapshot is `df` for the filesystems of the DANDI project directories, then the quota report
-# of the home directory, the one shown at login. The home directory sits on a filesystem shared
-# with every user, so `df` says nothing about it; what counts is its own quota, on space and on the
-# number of files, which ORCD writes to ~/orcd/.quota every 30 minutes. Should that file be
+# The snapshot is `df` for the filesystems of the DANDI project directories, on space and on the
+# number of files (inodes), each with its limit, then the quota report of the home directory, the
+# one shown at login. A filesystem can run out of inodes before it runs out of space, and the blob
+# mirror keeps a checksum file beside each of its hundreds of thousands of blobs. The home
+# directory sits on a filesystem shared with every user, so `df` says nothing about it; what
+# counts is its own quota, on space and on the number of files, which ORCD writes to
+# ~/orcd/.quota every 30 minutes. Should that file be
 # missing, the home directory's usage is measured with `du` instead (space only, no limits).
 #
 # Run on its own it records itself; record.sh runs it again, recorded, for the snapshot.
@@ -25,7 +28,7 @@ DU_TIMEOUT_SECONDS=600
 
 # One line per filesystem, the mount point first. The header is made one word per column, at
 # the same width so the columns stay aligned, for the Status page to read the output as a table.
-df -h --output=target,size,used,avail,pcent "${PATHS[@]}" | sed '1s/^Mounted on/Mounted   /'
+df -h --output=target,size,used,avail,pcent,itotal,iused,iavail,ipcent "${PATHS[@]}" | sed '1s/^Mounted on/Mounted   /'
 status=$?
 
 echo
