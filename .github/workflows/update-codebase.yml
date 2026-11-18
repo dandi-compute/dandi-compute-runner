@@ -106,10 +106,15 @@ jobs:
       # AIND capsules run Nextflow from the environment dandi-compute-core names for them. AIND
       # ephys pipeline 1.5.0 needs Nextflow 25.10 or later for its nf-schema plugin. The plugin is
       # installed here once, so capsules starting together do not all download it into ~/.nextflow.
+      # Python is pinned to a release the DANDI CLI's compiled dependencies (tensorstore, h5py) ship
+      # wheels for: left unpinned, conda-forge gave Python 3.15, which they have no wheels for, and
+      # every capsule's `pip install -U dandi` then compiled them from source for hours and failed.
+      # The environment's name carries the Python version, since one is only created when missing.
       - name: Provision Nextflow environment
         env:
-          NEXTFLOW_ENVIRONMENT: /orcd/data/dandi/001/environments/name-nextflow_version-25+10+4_environment
+          NEXTFLOW_ENVIRONMENT: /orcd/data/dandi/001/environments/name-nextflow_version-25+10+4_python-3+13_environment
           NEXTFLOW_VERSION: 25.10.4
+          PYTHON_VERSION: "3.13"
           NF_SCHEMA_PLUGIN: nf-schema@2.7.3
         run: |
           if ! command -v conda > /dev/null; then
@@ -122,9 +127,9 @@ jobs:
             echo "Nextflow ${NEXTFLOW_VERSION} is already in $NEXTFLOW_ENVIRONMENT."
           else
             if [ -d "$NEXTFLOW_ENVIRONMENT/conda-meta" ]; then
-              conda install -y -p "$NEXTFLOW_ENVIRONMENT" -c conda-forge -c bioconda --override-channels "nextflow=${NEXTFLOW_VERSION}" python pip
+              conda install -y -p "$NEXTFLOW_ENVIRONMENT" -c conda-forge -c bioconda --override-channels "nextflow=${NEXTFLOW_VERSION}" "python=${PYTHON_VERSION}" pip
             else
-              conda create -y -p "$NEXTFLOW_ENVIRONMENT" -c conda-forge -c bioconda --override-channels "nextflow=${NEXTFLOW_VERSION}" python pip
+              conda create -y -p "$NEXTFLOW_ENVIRONMENT" -c conda-forge -c bioconda --override-channels "nextflow=${NEXTFLOW_VERSION}" "python=${PYTHON_VERSION}" pip
             fi
             # Each capsule upgrades the DANDI CLI itself before uploading.
             "$NEXTFLOW_ENVIRONMENT/bin/pip" install dandi
