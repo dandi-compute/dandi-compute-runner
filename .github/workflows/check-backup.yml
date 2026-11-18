@@ -122,6 +122,10 @@ jobs:
               echo "::error title=${job} not submitted::No ${job} job was submitted in the last ${WINDOW_HOURS} hours."
               {
                 echo "${job}: no job was submitted in the last ${WINDOW_HOURS} hours."
+                if [ "$in_progress" -gt 0 ]; then
+                  echo "  An earlier one is still pending or running (${in_progress} in sacct), and launcher/backup.sh"
+                  echo "  submits no other while it is. squeue shows why it has not ended."
+                fi
                 echo "  The crontab submits it through launcher/backup.sh, which records each submission in the"
                 echo "  global logs under logs/. Check that the crontab is installed and what the last submission printed."
               } >> "$report"
