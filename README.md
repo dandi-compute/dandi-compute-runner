@@ -64,7 +64,7 @@ The runner is usually offline only briefly, between the end of its 12-hour Slurm
 ## Global logs
 
 Everything that runs on the cluster outside a job capsule is recorded in
-[dandi-compute-global-logs](https://github.com/dandi-compute/dandi-compute-global-logs), checked out at `/orcd/data/dandi/001/dandi-compute/dandi-compute-global-logs`. That covers every step of the self-hosted workflows, the cron trigger for dispatching, the submissions of the [S3 backup](#s3-backup) jobs, the daily [error report](#error-reports), a `squeue` snapshot every 5 minutes and a disk usage snapshot every 30 minutes ([`launcher/disk.sh`](launcher/disk.sh): `df` for the DANDI project directories, on space and on the number of files (inodes) with their limits, then the home directory's quota report from `~/orcd/.quota`, the one shown at login, with its usage and limits on space and on the number of files; `df` of the home directory would only show the filesystem it shares with every user). The logs of job capsules themselves stay with each capsule and go to DANDI with it.
+[dandi-compute-global-logs](https://github.com/dandi-compute/dandi-compute-global-logs), checked out at `/orcd/data/dandi/001/dandi-compute/dandi-compute-global-logs`. That covers every step of the self-hosted workflows, the cron trigger for dispatching, the submissions of the [S3 backup](#s3-backup) jobs, the daily [error report](#error-reports), a `squeue` snapshot every 5 minutes and a disk usage snapshot every 30 minutes ([`launcher/disk.sh`](launcher/disk.sh): `df` for the DANDI project directories, on space and on the number of files (inodes) with their limits, then the home directory's quota report from `~/orcd/.quota`, the one shown at login, with its usage and limits on space and on the number of files; `df` of the home directory would only show the filesystem it shares with every user; then the [blobs the mirror holds that the bucket has deleted](#blobs-deleted-from-the-bucket), with their list beside the output). The logs of job capsules themselves stay with each capsule and go to DANDI with it.
 
 [`launcher/record.sh`](launcher/record.sh) does the recording: `record.sh KIND NAME -- COMMAND...` runs the command and records it on that day's branch for its kind (`logs/YYYY-MM-DD`, `errors/YYYY-MM-DD`, `monitor/YYYY-MM-DD` or `disk/YYYY-MM-DD`, so the kinds update independently), under `logs/{timestamp}-{name}/` or, for the snapshot kinds and grouped by hour, `monitor/{HH}/{timestamp}-squeue/` and `disk/{HH}/{timestamp}-usage/`. A snapshot also writes its path relative to its kind's directory (`{HH}/{timestamp}-{name}`) to that kind's `LATEST` (`monitor/LATEST`, `disk/LATEST`), so the newest one can be looked up without listing the directory. Once a snapshot's day branch is on GitHub, it also points the persistent `monitor/latest` or `disk/latest` branch at that day: its one file, `LATEST`, names the newest day branch of that kind, so the newest snapshot can be found even on a day with no branch, such as just after midnight or while the snapshots are down. Only each day's first snapshot changes it, and it never moves back to an earlier day.
 
@@ -121,6 +121,7 @@ The cluster keeps a mirror of the DANDI S3 bucket on the project partitions, and
 | `DANDI-Backup-Nonblobs` | daily at 18:00 | Copies everything outside `blobs/` and `zarr/` |
 | `DANDI-Update-Backup-Dashboard` | daily at 06:00 | Updates the [backup-status](https://github.com/dandi/backup-status) dashboard |
 | `DANDI-Verify-Checksums` | daily at 10:00 | Compares the content of each mirrored blob with its ETag in the bucket, in a 16-task array, 4 tasks at a time |
+| `DANDI-Track-Deleted-Blobs` | daily at 05:00 | Finds the mirrored blobs the bucket has deleted since, and how long the bucket keeps them ([below](#blobs-deleted-from-the-bucket)). Its script is this repository's [`launcher/deleted_blobs.sh`](launcher/deleted_blobs.sh). |
 
 The Zarr backup (`backup.sh zarr`) has been disabled since May 2026.
 
@@ -136,6 +137,28 @@ The [Check backup](https://github.com/dandi-compute/dandi-compute-runner/actions
 - **Check mirror growth** runs on a GitHub-hosted runner and reads the history of backup-status. It fails when the dashboard's count of mirrored blobs has not grown in 3 days while the bucket's has. That catches a backup that stops copying without any task failing.
 
 The email goes out on every failed run, so at most once a day. backup-status has checks of its own too, which email when a partition is over 85% full or the dashboard has not been updated for 3 days.
+
+### Blobs deleted from the bucket
+
+The blob backup only copies, so a blob that DANDI deletes from the bucket stays in the mirror. The bucket is versioned, and its lifecycle rule for `blobs/` keeps a deleted blob's last version for 30 days (`NoncurrentDays`, read from the bucket each time). S3 deletes it for good from the first midnight UTC after that, though it can take a little longer to get to it. Until then DANDI can still restore the blob from the bucket. After that the mirror holds the only copy.
+
+`DANDI-Track-Deleted-Blobs` runs [`launcher/deleted_blobs.py`](launcher/deleted_blobs.py) `scan` every day. It lists every version of `blobs/` in the bucket, anonymously, in a few minutes, and walks both partitions of the mirror (directories only, no blob is read). Each blob of either partition that the bucket no longer has goes on the list in `/orcd/data/dandi/001/backup/deleted_blobs/`, one row per blob, soonest to leave the bucket first:
+
+| Column | What it holds |
+|---|---|
+| `key` | The blob's key in the bucket, `blobs/{id[0:3]}/{id[3:6]}/{id}` |
+| `partition` | The partition that holds it, `001` or `002` (also one it was stranded on before the split changed) |
+| `size` | Its size in the mirror, in bytes |
+| `first_missing` | When a scan first found it missing from the bucket |
+| `deleted` | When the bucket deleted it (its delete marker), when known |
+| `expires` | When the bucket's lifecycle deletes its last version for good, when known |
+| `state` | `restorable` while the bucket still has a version of it, `expired` once it has none |
+
+The bucket forgets a deletion once the last version is gone, so `deleted` and `expires` are carried over from earlier scans. A blob that was already gone from the bucket on the first scan has neither. A blob that comes back to the bucket drops off the list. `summary.json` beside the list holds the scan's time and the totals of the mirror, and names the list it goes with. A scan that fails leaves the last complete one in place. In the totals, a blob still in the bucket counts at its size there, so only the deleted ones are looked at one by one.
+
+Every [disk usage snapshot](#global-logs) ends with the newest scan (`deleted_blobs.py summary`): when it ran, then per partition how many mirrored blobs and how much of their size the bucket no longer has, and how many of them are still restorable, then how many expire within a day, within a week and later, with the soonest, and how many have expired. The list itself is saved in the snapshot's record as `deleted-blobs.tsv`. [`launcher/record.sh`](launcher/record.sh) gives each recorded command its record's directory as `DANDI_COMPUTE_RECORD_DIRECTORY` for files like this one, and masks them like the rest. Git stores the list once for as long as it stays the same, so it costs about one copy a day. The Status page of [dandi-compute-page](https://github.com/dandi-compute/dandi-compute-page) shows the snapshot.
+
+The Check backup workflow emails when the job fails, as for the other backup jobs.
 
 ## Error reports
 

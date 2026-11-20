@@ -15,6 +15,12 @@
 # ~/orcd/.quota every 30 minutes. Should that file be
 # missing, the home directory's usage is measured with `du` instead (space only, no limits).
 #
+# Last come the blobs the mirror still holds after the bucket deleted them, from the newest daily
+# scan of launcher/deleted_blobs.py (the DANDI-Track-Deleted-Blobs job, see launcher/backup.sh):
+# when it ran, how much of each partition's mirror they are, and how long the bucket still keeps
+# them. The list of those blobs goes into the record beside the output, as deleted-blobs.tsv. Git
+# stores one copy of it for as long as it does not change, so it costs about one copy a day.
+#
 # Run on its own it records itself; record.sh runs it again, recorded, for the snapshot.
 if [ -z "${DANDI_COMPUTE_RECORDED:-}" ]; then
     exec /orcd/data/dandi/001/dandi-compute/dandi-compute-runner/launcher/record.sh disk usage -- "$0"
@@ -25,6 +31,12 @@ set -uo pipefail
 PATHS=(/orcd/data/dandi/001 /orcd/data/dandi/002)
 QUOTA_REPORT="$HOME/orcd/.quota"
 DU_TIMEOUT_SECONDS=600
+LAUNCHER="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
+# deleted_blobs.py needs only a Python 3; these are tried before the one on PATH.
+PYTHONS=(
+    /orcd/data/dandi/001/environments/name-datalad_env/bin/python
+    /orcd/data/dandi/001/environments/name-s3+backup_env/bin/python
+)
 
 # One line per filesystem, the mount point first. The header is made one word per column, at
 # the same width so the columns stay aligned, for the Status page to read the output as a table.
@@ -43,6 +55,18 @@ else
     else
         printf '%-10s %s\n' "?" "$HOME (du failed or took over ${DU_TIMEOUT_SECONDS}s)"
     fi
+fi
+
+echo
+python=$(command -v python3)
+for candidate in "${PYTHONS[@]}"; do
+    [ -x "$candidate" ] && { python="$candidate"; break; }
+done
+if [ -n "$python" ]; then
+    # DANDI_COMPUTE_RECORD_DIRECTORY is the record's own directory (see launcher/record.sh).
+    "$python" "$LAUNCHER/deleted_blobs.py" summary ${DANDI_COMPUTE_RECORD_DIRECTORY:+--list-to "$DANDI_COMPUTE_RECORD_DIRECTORY"}
+else
+    echo "Deleted blobs: no Python to read the last scan with"
 fi
 
 exit "$status"
