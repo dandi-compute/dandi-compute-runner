@@ -327,7 +327,9 @@ jobs:
       report: ${{ steps.deletions.outputs.report }}
     env:
       RECORD_URL: https://raw.githubusercontent.com/dandi-compute/dandi-compute-global-logs/refs/heads/not-in-bucket/not-in-bucket.tsv
-      # Where simple-s3-backup sets how long a blob is kept before it is deleted from the mirror.
+      # simple-s3-backup's partitions.json, which sets how long a blob is kept before it is deleted from
+      # the mirror, and before it, the code that set it.
+      SPEC_URL: https://raw.githubusercontent.com/dandi/simple-s3-backup/main/src/simple_s3_backup/partitions.json
       GRACE_SOURCE_URL: https://raw.githubusercontent.com/dandi/simple-s3-backup/main/src/simple_s3_backup/_base/_not_in_bucket.py
       # A head's checksum run comes every few days, and the first pass over the mirror takes longer.
       OVERDUE_DAYS: 7
@@ -362,12 +364,15 @@ jobs:
             write_report "Could not download the record of blobs no longer in the bucket (HTTP ${status}), so whether they are deleted when due is unknown."
             exit 1
           fi
-          # Without simple-s3-backup's own number of days, not_in_bucket.py takes 183.
-          curl -sSf -o "$RUNNER_TEMP/grace.py" "$GRACE_SOURCE_URL" || echo "::warning::Could not read GRACE_DAYS from ${GRACE_SOURCE_URL}; taking 183 days."
+          # Without simple-s3-backup's own number of days, from either, not_in_bucket.py takes 183.
+          curl -sSf -o "$RUNNER_TEMP/partitions.json" "$SPEC_URL" \
+            || curl -sSf -o "$RUNNER_TEMP/grace.py" "$GRACE_SOURCE_URL" \
+            || echo "::warning::Could not read simple-s3-backup's grace period from ${SPEC_URL} or ${GRACE_SOURCE_URL}; taking 183 days."
 
           # The step's shell stops at the first failing command, so the exit status is kept this way.
           report=$(python3 launcher/not_in_bucket.py --record "$RUNNER_TEMP/not-in-bucket.tsv" \
-            --grace-source "$RUNNER_TEMP/grace.py" --overdue "$OVERDUE_DAYS") && checked=0 || checked=$?
+            --spec "$RUNNER_TEMP/partitions.json" --grace-source "$RUNNER_TEMP/grace.py" \
+            --overdue "$OVERDUE_DAYS") && checked=0 || checked=$?
           write_report "$report"
           if [ "$checked" -eq 1 ]; then
             echo "::error title=Deletions overdue::A mirrored blob is more than ${OVERDUE_DAYS} days past its deletion date."

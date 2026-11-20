@@ -1,14 +1,20 @@
 """Summarize the mirrored blobs the bucket no longer has, for the disk usage snapshot.
 
 simple-s3-backup's checksum job (DANDI-Verify-Checksums) finds the mirrored blobs that are no
-longer in the bucket and keeps each for GRACE_DAYS (183) from when it first found it missing, then
-deletes it from the mirror. Every event is appended to RECORD (`time`, `event`, `key`, `path`, `job`):
-`missing` when first found, `reappeared` when back in the bucket, `deleted` when deleted from the
-mirror, `gone` when gone from the mirror by other means. A blob is pending while its last event is
-`missing`, and its grace period runs from the first `missing` since its last other event.
+longer in the bucket and keeps each for `not_in_bucket_grace_days` of its partitions.json (183) from
+when it first found it missing, then deletes it from the mirror. Every event is appended to RECORD
+(`time`, `event`, `key`, `path`, `job`): `missing` when first found, `reappeared` when back in the
+bucket, `deleted` when deleted from the mirror, `gone` when gone from the mirror by other means. A
+blob is pending while its last event is `missing`, and its grace period runs from the first
+`missing` since its last other event.
 
-    not_in_bucket.py [--record FILE] [--grace-days DAYS | --grace-source FILE] [--list-to DIR] [--cache FILE]
-    not_in_bucket.py --overdue DAYS [--record FILE] [--grace-days DAYS | --grace-source FILE]
+    not_in_bucket.py [--record FILE] [--spec FILE] [--grace-days DAYS] [--list-to DIR] [--cache FILE]
+    not_in_bucket.py --overdue DAYS [--record FILE] [--spec FILE] [--grace-days DAYS]
+
+The partitions, which head goes on which, and the grace period come from the same partitions.json
+(--spec). A checkout from before it has none, so then the partitions are 001 and 002 as split
+when this was written, and the grace period is read from GRACE_DAYS in its code (--grace-source),
+or taken as 183.
 
 This prints, as the blocks of the disk usage snapshot (launcher/disk.sh):
 
@@ -37,6 +43,7 @@ library, and nothing newer than Python 3.6.
 
 import argparse
 import datetime
+import json
 import math
 import os
 import re
@@ -44,11 +51,19 @@ import sys
 
 RECORD = "/orcd/data/dandi/001/backup/not_in_bucket.tsv"
 RECORD_COLUMNS = ("time", "event", "key", "path", "job")
-# Where simple-s3-backup sets how long a blob is kept, in its checkout on the cluster.
+# simple-s3-backup's partitions.json in its checkout on the cluster: the mirror's partitions, which
+# head goes on which, and how long a blob no longer in the bucket is kept.
+SPEC = "/orcd/data/dandi/001/backup/simple-s3-backup/src/simple_s3_backup/partitions.json"
+# Where checkouts from before partitions.json set how long a blob is kept.
 GRACE_DAYS_SOURCE = "/orcd/data/dandi/001/backup/simple-s3-backup/src/simple_s3_backup/_base/_not_in_bucket.py"
 DEFAULT_GRACE_DAYS = 183
-MIRROR_ROOT = "/orcd/data/dandi"
-PARTITIONS = ("001", "002")
+# The mirror's layout as partitions.json gave it when this was written, kept for a checkout without it
+# and for whatever it leaves out (see apply_spec).
+LAYOUT = {
+    "mirror_root": "/orcd/data/dandi",
+    "partitions": ("001", "002"),
+    "blobs": dict([(head, "001") for head in "0123456789"] + [(head, "002") for head in "abcdef"]),
+}
 LIST_NAME = "blobs-not-in-bucket.tsv"
 LIST_COLUMNS = ("key", "partition", "size", "missing_since", "deletion_due")
 CACHE_COLUMNS = ("key", "partition", "size", "missing_since", "path")
@@ -128,8 +143,38 @@ def percent(part, whole):
     return "<0.01%" if part and text == "0.00%" else text
 
 
-def grace_days(source=GRACE_DAYS_SOURCE):
-    """simple-s3-backup's GRACE_DAYS as deployed, and where the number came from."""
+def read_spec(path):
+    """simple-s3-backup's partitions.json, or None when it cannot be read or is not one."""
+    try:
+        with open(path) as stream:
+            spec = json.load(stream)
+    except (OSError, ValueError):
+        return None
+    return spec if isinstance(spec, dict) else None
+
+
+def apply_spec(spec):
+    """Take the mirror's layout from the spec, keeping LAYOUT's for whatever it does not give."""
+    spec = spec or {}
+    root, partitions, blobs = spec.get("mirror_root"), spec.get("partitions"), spec.get("blobs")
+    if isinstance(root, str) and root:
+        LAYOUT["mirror_root"] = root
+    if isinstance(partitions, list) and partitions and all(isinstance(name, str) for name in partitions):
+        LAYOUT["partitions"] = tuple(partitions)
+    if isinstance(blobs, dict) and blobs:
+        LAYOUT["blobs"] = dict((str(head).lower(), str(partition)) for head, partition in blobs.items())
+
+
+def grace_days(spec=None, source=GRACE_DAYS_SOURCE):
+    """
+    How long a blob no longer in the bucket is kept, and where the number came from.
+
+    From the spec's not_in_bucket_grace_days, else from GRACE_DAYS in a checkout from before the spec,
+    else 183 days, assumed.
+    """
+    days = (spec or {}).get("not_in_bucket_grace_days")
+    if isinstance(days, (int, float)) and not isinstance(days, bool) and days > 0:
+        return float(days), "simple-s3-backup's partitions.json"
     try:
         with open(source) as stream:
             for line in stream:
@@ -143,17 +188,13 @@ def grace_days(source=GRACE_DAYS_SOURCE):
 
 def partition_of(key, path):
     """The partition a blob is mirrored on, from its path, or else from its head as the backup splits them."""
-    prefix = MIRROR_ROOT.rstrip("/") + "/"
+    prefix = LAYOUT["mirror_root"].rstrip("/") + "/"
     if path.startswith(prefix):
         partition = path[len(prefix) :].split("/", 1)[0]
-        if partition in PARTITIONS:
+        if partition in LAYOUT["partitions"]:
             return partition
     head = key[len("blobs/") : len("blobs/") + 1].lower() if key.startswith("blobs/") else ""
-    if head and head in "0123456789":
-        return "001"
-    if head and head in "abcdef":
-        return "002"
-    return ""
+    return LAYOUT["blobs"].get(head, "") if head else ""
 
 
 def pending_blobs(record):
@@ -265,7 +306,7 @@ def blob_rows(record, cache=None):
 def partition_usage(partition):
     """The used and total bytes of a partition, as df counts them; (None, None) when it cannot be read."""
     try:
-        stat = os.statvfs(os.path.join(MIRROR_ROOT, partition))
+        stat = os.statvfs(os.path.join(LAYOUT["mirror_root"], partition))
     except OSError:
         return None, None
     return (stat.f_blocks - stat.f_bfree) * stat.f_frsize, stat.f_blocks * stat.f_frsize
@@ -301,7 +342,7 @@ def summary_blocks(rows, days, source, updated, now, usage=partition_usage):
     share = [["Mirror", "Blobs", "Size", "Used", "Share%"]]
     total_blobs = total_bytes = total_used = 0
     used_known = True
-    for partition in PARTITIONS:
+    for partition in LAYOUT["partitions"]:
         mine = [row for row in rows if row["partition"] == partition]
         size = sum(int(row["size"]) for row in mine if row["size"])
         used, _ = usage(partition)
@@ -313,7 +354,7 @@ def summary_blocks(rows, days, source, updated, now, usage=partition_usage):
             total_used += used
         share.append(
             [
-                os.path.join(MIRROR_ROOT, partition),
+                os.path.join(LAYOUT["mirror_root"], partition),
                 str(len(mine)),
                 human_size(size),
                 human_size(used) if used is not None else "-",
@@ -411,16 +452,21 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--record", default=RECORD, help="simple-s3-backup's record of blobs not in the bucket")
     parser.add_argument("--grace-days", type=float, help="days a blob is kept (default: simple-s3-backup's, else 183)")
-    parser.add_argument("--grace-source", default=GRACE_DAYS_SOURCE, help="simple-s3-backup's file setting GRACE_DAYS")
+    parser.add_argument("--spec", default=SPEC, help="simple-s3-backup's partitions.json")
+    parser.add_argument(
+        "--grace-source", default=GRACE_DAYS_SOURCE, help="where GRACE_DAYS is set, in a checkout without the spec"
+    )
     parser.add_argument("--overdue", type=float, help="only check that no blob is more than this many days past due")
     parser.add_argument("--list-to", default="", help="a directory to write the list of pending blobs into")
     parser.add_argument("--cache", default="", help="a file to cache the pending blobs' sizes in")
     arguments = parser.parse_args(argv)
 
+    spec = read_spec(arguments.spec)
+    apply_spec(spec)
     if arguments.grace_days is not None:
         days, source = arguments.grace_days, "given"
     else:
-        days, source = grace_days(arguments.grace_source)
+        days, source = grace_days(spec, arguments.grace_source)
     if arguments.overdue is not None:
         try:
             pending = pending_blobs(arguments.record)
