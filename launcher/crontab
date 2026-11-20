@@ -39,7 +39,7 @@
 0 10 * * * /orcd/data/dandi/001/dandi-compute/dandi-compute-runner/launcher/backup.sh checksums > /dev/null 2>&1
 # Once the blob backup's 12 hours are up, check that each blob head is on the partition
 # simple-s3-backup's partitions.json assigns it and on no other. It lists directories only and
-# deletes nothing; s3backup dandi cleanup-misplaced-blobs fixes what it finds.
+# deletes nothing; the Cleanup misplaced blobs workflow, run by hand, fixes what it finds.
 30 11 * * * /orcd/data/dandi/001/dandi-compute/dandi-compute-runner/launcher/backup.sh verify-blobs > /dev/null 2>&1
 
 # Every hour, the ledger of blobs whose checksum did not match the bucket, kept by the checksums job,

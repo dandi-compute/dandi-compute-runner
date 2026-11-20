@@ -15,8 +15,8 @@ name: Check backup
 #     directories on a partition simple-s3-backup's partitions.json does not assign it to, or none
 #     on the one it does; its log then has [MISPLACED] or [MISSING] lines, which tell such a
 #     failure apart from one of the check itself, since both exit 1. It deletes nothing: the blob
-#     backup fills a missing head, and s3backup dandi cleanup-misplaced-blobs deletes the copies left
-#     elsewhere.
+#     backup fills a missing head, and the Cleanup misplaced blobs workflow (s3backup dandi
+#     cleanup-misplaced-blobs) deletes the copies left elsewhere.
 #   - Check mirror growth reads the history of https://github.com/dandi/backup-status, which the
 #     dashboard job updates every morning. It fails when the mirror has not gained a blob in
 #     GROWTH_DAYS days while the bucket has, which catches a backup that stops copying without
@@ -215,9 +215,10 @@ jobs:
                   {
                     echo "  A blob head is on a partition that simple-s3-backup's partitions.json does not assign it to,"
                     echo "  or missing from the one it does (the [MISPLACED] and [MISSING] lines of the log name which)."
-                    echo "  Nothing was deleted. The blob backup fills a missing head; on the cluster, s3backup dandi"
-                    echo "  cleanup-misplaced-blobs lists the copies left elsewhere, and --apply deletes those the"
-                    echo "  assigned partition holds completely."
+                    echo "  Nothing was deleted. The blob backup fills a missing head. The Cleanup misplaced blobs"
+                    echo "  workflow (s3backup dandi cleanup-misplaced-blobs) lists the copies left elsewhere in a dry"
+                    echo "  run, and with apply checked deletes those the assigned partition holds completely:"
+                    echo "  https://github.com/dandi-compute/dandi-compute-runner/actions/workflows/cleanup-misplaced-blobs.yml"
                   } >> "$report"
                 else
                   echo "  Its log names no misplaced or missing blob head, so the check itself failed to run; see the end of its log." >> "$report"
@@ -387,7 +388,7 @@ jobs:
           to: cody.c.baker.phd@gmail.com  # Add more with comma separation (no spaces)
           from: DANDI Compute <dandi-compute@users.noreply.github.com>
           body: |
-            The check of the DANDI S3 backup on MIT Engaging found a problem. Job capsules whose blob is not in the mirror fail on a missing input, and those whose blob in the mirror does not match the bucket (DANDI-Verify-Checksums, which deletes such a copy for the next blob backup to copy again) read the wrong data. A DANDI-Verify-Blobs failure whose log has [MISPLACED] or [MISSING] lines means a blob head is on a partition that simple-s3-backup's partitions.json does not assign it to, or missing from the one it does; without them, the check itself failed to run. The blob backup fills a missing head, and s3backup dandi cleanup-misplaced-blobs --apply deletes the copies left on the other partition once the assigned one holds them completely.
+            The check of the DANDI S3 backup on MIT Engaging found a problem. Job capsules whose blob is not in the mirror fail on a missing input, and those whose blob in the mirror does not match the bucket (DANDI-Verify-Checksums, which deletes such a copy for the next blob backup to copy again) read the wrong data. A DANDI-Verify-Blobs failure whose log has [MISPLACED] or [MISSING] lines means a blob head is on a partition that simple-s3-backup's partitions.json does not assign it to, or missing from the one it does; without them, the check itself failed to run. The blob backup fills a missing head, and the Cleanup misplaced blobs workflow (https://github.com/dandi-compute/dandi-compute-runner/actions/workflows/cleanup-misplaced-blobs.yml), a dry run first and then with apply checked, deletes the copies left on the other partition once the assigned one holds them completely.
 
             Backup jobs (${{ needs.CheckBackupJobs.result }}):
             ${{ needs.CheckBackupJobs.outputs.report || 'No report. The check did not run (the runner was offline) or failed before reporting; see the run.' }}
