@@ -11,7 +11,12 @@ name: Check backup
 #     log. A task of DANDI-Verify-Checksums that finds a mirrored blob not matching the bucket
 #     deletes that copy, for the next blob backup to copy afresh, and exits 3. Such a task is told
 #     apart from other failures by that exit code, and each blob it deleted is read from the
-#     `[MISMATCH DELETED]` lines of its log.
+#     `[MISMATCH DELETED]` lines of its log. DANDI-Verify-Blobs fails when a blob head has
+#     directories on a partition simple-s3-backup's partitions.json does not assign it to, or none
+#     on the one it does; its log then has [MISPLACED] or [MISSING] lines, which tell such a
+#     failure apart from one of the check itself, since both exit 1. It deletes nothing: the blob
+#     backup fills a missing head, and the Cleanup misplaced blobs workflow (s3backup dandi
+#     cleanup-misplaced-blobs) deletes the copies left elsewhere.
 #   - Check mirror growth reads the history of https://github.com/dandi/backup-status, which the
 #     dashboard job updates every morning. It fails when the mirror has not gained a blob in
 #     GROWTH_DAYS days while the bucket has, which catches a backup that stops copying without
@@ -74,7 +79,7 @@ jobs:
       only_checksum_mismatches: ${{ steps.jobs.outputs.only_checksum_mismatches }}
     env:
       # The names launcher/backup.sh gives the jobs the crontab submits every day.
-      JOBS: DANDI-Backup-Blobs DANDI-Backup-Nonblobs DANDI-Update-Backup-Dashboard DANDI-Verify-Checksums
+      JOBS: DANDI-Backup-Blobs DANDI-Backup-Nonblobs DANDI-Update-Backup-Dashboard DANDI-Verify-Checksums DANDI-Verify-Blobs
       LOG_DIRECTORY: /orcd/data/dandi/001/backup/logs
       REDACT_SCRIPT: /orcd/data/dandi/001/dandi-compute/dandi-compute-runner/launcher/redact.sed
       WINDOW_HOURS: 24
@@ -87,6 +92,8 @@ jobs:
       CHECKSUM_MISMATCH_EXIT: "3:0"
       # How many deleted blobs are named.
       MISMATCHES_SHOWN: 50
+      # A failure of this job means misplaced or missing blob heads, which need a hand.
+      PLACEMENT_JOB: DANDI-Verify-Blobs
 
     steps:
       - name: Check the backup jobs of the last day
@@ -196,6 +203,31 @@ jobs:
               other_failure=1
               echo "::error title=${job} failed::${failed_count} of its tasks failed in the last ${WINDOW_HOURS} hours."
               describe "$failures" >> "$report"
+              if [ "$job" = "$PLACEMENT_JOB" ]; then
+                # verify-blobs exits 1 on a placement problem, as it does on any other failure (a
+                # failed conda activate, an unreadable partitions.json, the lock held), so the note
+                # is added only when a failed task's log has the [MISPLACED] or [MISSING] lines
+                # that verify_dandi_blobs prints for a misplaced or missing head.
+                placement_problem=0
+                while read -r job_id; do
+                  log_file="${LOG_DIRECTORY}/${job}-${job_id}.log"
+                  if [ -r "$log_file" ] && grep -aqE '^\[(MISPLACED|MISSING)\] head ' "$log_file"; then
+                    placement_problem=1
+                  fi
+                done < <(awk -F'|' '{ print $1 }' <<< "$failures")
+                if [ "$placement_problem" -eq 1 ]; then
+                  {
+                    echo "  A blob head is on a partition that simple-s3-backup's partitions.json does not assign it to,"
+                    echo "  or missing from the one it does (the [MISPLACED] and [MISSING] lines of the log name which)."
+                    echo "  Nothing was deleted. The blob backup fills a missing head. The Cleanup misplaced blobs"
+                    echo "  workflow (s3backup dandi cleanup-misplaced-blobs) lists the copies left elsewhere in a dry"
+                    echo "  run, and with apply checked deletes those the assigned partition holds completely:"
+                    echo "  https://github.com/dandi-compute/dandi-compute-runner/actions/workflows/cleanup-misplaced-blobs.yml"
+                  } >> "$report"
+                else
+                  echo "  Its log names no misplaced or missing blob head, so the check itself failed to run; see the end of its log." >> "$report"
+                fi
+              fi
               if [ "$failed_count" -gt 5 ]; then
                 echo "  ... and $((failed_count - 5)) more" >> "$report"
               fi
@@ -419,7 +451,7 @@ jobs:
           to: cody.c.baker.phd@gmail.com  # Add more with comma separation (no spaces)
           from: DANDI Compute <dandi-compute@users.noreply.github.com>
           body: |
-            The check of the DANDI S3 backup on MIT Engaging found a problem. Job capsules whose blob is not in the mirror fail on a missing input, and those whose blob in the mirror does not match the bucket (DANDI-Verify-Checksums, which deletes such a copy for the next blob backup to copy again) read the wrong data.
+            The check of the DANDI S3 backup on MIT Engaging found a problem. Job capsules whose blob is not in the mirror fail on a missing input, and those whose blob in the mirror does not match the bucket (DANDI-Verify-Checksums, which deletes such a copy for the next blob backup to copy again) read the wrong data. A DANDI-Verify-Blobs failure whose log has [MISPLACED] or [MISSING] lines means a blob head is on a partition that simple-s3-backup's partitions.json does not assign it to, or missing from the one it does; without them, the check itself failed to run. The blob backup fills a missing head, and the Cleanup misplaced blobs workflow (https://github.com/dandi-compute/dandi-compute-runner/actions/workflows/cleanup-misplaced-blobs.yml), a dry run first and then with apply checked, deletes the copies left on the other partition once the assigned one holds them completely.
 
             Backup jobs (${{ needs.CheckBackupJobs.result }}):
             ${{ needs.CheckBackupJobs.outputs.report || 'No report. The check did not run (the runner was offline) or failed before reporting; see the run.' }}
@@ -433,4 +465,5 @@ jobs:
             Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
             Checksum mismatches so far: https://github.com/dandi-compute/dandi-compute-global-logs/blob/checksum-mismatches/checksum-mismatches.tsv
             Dashboard: https://github.com/dandi/backup-status
+            Partition spec: https://github.com/dandi/simple-s3-backup/blob/main/src/simple_s3_backup/partitions.json
             Blobs no longer in the bucket, deleted from the mirror after 183 days: https://github.com/dandi-compute/dandi-compute-global-logs/blob/not-in-bucket/not-in-bucket.tsv

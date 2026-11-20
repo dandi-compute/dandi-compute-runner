@@ -1,0 +1,97 @@
+name: Cleanup misplaced blobs
+
+# Submits launcher/cleanup_misplaced_blobs.sh, which runs simple-s3-backup's
+# `s3backup dandi cleanup-misplaced-blobs` in a SLURM job of its own: a dry run, or with `apply`
+# the deletion of the blob directories left on a partition partitions.json does not assign them
+# to, once the assigned one holds a complete copy. Run it when DANDI-Verify-Blobs reports
+# [MISPLACED] heads, a dry run first. The cleanup takes hours, and the runner also processes the
+# queue, so this only submits the job and does not wait for it; the job records its output in the
+# global logs repository. Never scheduled.
+
+on:
+  workflow_dispatch:
+    inputs:
+      apply:
+        description: "Delete the misplaced copies. Unchecked, the cleanup is a dry run that only lists them."
+        required: false
+        type: boolean
+        default: false
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  DANDICOMPUTE_OOP_FAILSAFE_LOG: ${{ vars.DANDICOMPUTE_OOP_FAILSAFE_LOG }}
+
+jobs:
+  SubmitCleanup:
+    name: Submit the cleanup job
+    # Started by hand, so there is no runner check: while the runner is offline the job waits for it
+    # ("Waiting for a runner to pick up this job") and runs once it is back.
+    runs-on: [self-hosted, mit, engaging, submitter]
+    # Each step records itself in the global logs repository (see launcher/record.sh), inside
+    # GitHub's own default shell for bash. Until record.sh is on this machine (the first Update
+    # codebase run is what brings it), a step runs in that shell unrecorded rather than failing.
+    defaults:
+      run:
+        shell: bash --noprofile --norc -c "test -x /orcd/data/dandi/001/dandi-compute/dandi-compute-runner/launcher/record.sh && exec /orcd/data/dandi/001/dandi-compute/dandi-compute-runner/launcher/record.sh logs cleanup-misplaced-blobs-submit -- bash --noprofile --norc -eo pipefail $0; echo record.sh not found, running unrecorded >&2; exec bash --noprofile --norc -eo pipefail $0" {0}
+    timeout-minutes: 10
+    env:
+      APPLY: ${{ inputs.apply }}
+
+    steps:
+      - name: Submit cleanup-misplaced-blobs
+        run: |
+          SCRIPT=/orcd/data/dandi/001/dandi-compute/dandi-compute-runner/launcher/cleanup_misplaced_blobs.sh
+          JOB_NAME=DANDI-Cleanup-Misplaced-Blobs
+          LOG_DIRECTORY=/orcd/data/dandi/001/backup/logs
+          if [ "$APPLY" = "true" ]; then
+            MODE="apply (deletes the misplaced copies the assigned partition holds completely)"
+            ARGS=(--apply)
+            RECORD_NAME=cleanup-misplaced-blobs-apply
+          else
+            MODE="dry run (deletes nothing)"
+            ARGS=()
+            RECORD_NAME=cleanup-misplaced-blobs
+          fi
+
+          # The job's own lock would make a second one exit at once, so say so here instead.
+          existing=$(squeue --me -h -n "$JOB_NAME" -t PD,CF,R -o '%i (%T)' | paste -sd ' ')
+          if [ -n "$existing" ]; then
+            echo "::error title=Cleanup already submitted::A $JOB_NAME job is already pending or running: $existing. Wait for it to end, or scancel it, then run this again."
+            exit 1
+          fi
+
+          mkdir -p "$LOG_DIRECTORY"
+          # sbatch passes this step's environment on to the job, and with it the
+          # DANDI_COMPUTE_RECORDED that record.sh set for this step, which would keep the job from
+          # recording itself.
+          job_id=$(env -u DANDI_COMPUTE_RECORDED sbatch --parsable \
+            --job-name="$JOB_NAME" \
+            --output="$LOG_DIRECTORY/%x-%j.log" --error="$LOG_DIRECTORY/%x-%j.log" \
+            "$SCRIPT" "${ARGS[@]}")
+          job_id="${job_id%%;*}"
+          log_file="$LOG_DIRECTORY/$JOB_NAME-$job_id.log"
+          # The record goes on the day branch of the day the job starts, today unless it waits.
+          record="https://github.com/dandi-compute/dandi-compute-global-logs/tree/logs/$(date +%F)/logs"
+
+          echo "Submitted SLURM job $job_id: cleanup-misplaced-blobs, $MODE."
+          echo "Its SLURM log: $log_file"
+          echo "Its record, once it ends: logs/{timestamp}-$RECORD_NAME/ in $record (the logs/YYYY-MM-DD branch of the day it starts)"
+          {
+            echo "### Cleanup misplaced blobs: ${MODE%% (*}"
+            echo
+            echo "Submitted SLURM job \`$job_id\` ($JOB_NAME), $MODE. This run does not wait for it; it can take hours."
+            echo
+            echo "- SLURM log on the cluster: \`$log_file\`"
+            echo "- Record in the global logs, once the job ends: \`logs/{timestamp}-$RECORD_NAME/\` (\`stdout\`, \`stderr\`, \`exit_status\`) in [$record]($record), or the \`logs/YYYY-MM-DD\` branch of whichever later day the job starts"
+            echo "- Follow it with \`squeue -j $job_id\` or \`sacct -j $job_id\`"
+            if [ "$APPLY" != "true" ]; then
+              echo
+              echo "Once the dry run lists what you expect, run this workflow again with **apply** checked."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
