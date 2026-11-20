@@ -43,7 +43,31 @@ BACKUP_CHECKOUT="$BACKUP_DIRECTORY/simple-s3-backup"
 BACKUP_REPOSITORY_URL=https://github.com/dandi/simple-s3-backup
 BLOB_SCRIPT="$BACKUP_CHECKOUT/scripts/backup_blobs_batch_deployment.sh"
 BACKUP_LOG_DIRECTORY="$BACKUP_DIRECTORY/logs"
-PARTITIONS=(001 002)
+# Which partition each blob head belongs on is simple-s3-backup's to decide, so it is read from
+# that checkout's spec rather than repeated here.
+PARTITION_SPEC="$BACKUP_CHECKOUT/src/simple_s3_backup/partitions.json"
+PARTITIONS=()
+declare -A BLOB_HEAD_PARTITION=()
+if spec=$(python3 -c '
+import json, sys
+spec = json.load(open(sys.argv[1]))
+print(" ".join(spec["partitions"]))
+for head, partition in sorted(spec["blobs"].items()):
+    print(head, partition)
+' "$PARTITION_SPEC" 2> /dev/null); then
+    read -r -a PARTITIONS <<< "$(head -n 1 <<< "$spec")"
+    while read -r head partition; do
+        BLOB_HEAD_PARTITION[$head]=$partition
+    done < <(tail -n +2 <<< "$spec")
+fi
+unset spec
+if [ "${#PARTITIONS[@]}" -eq 0 ]; then
+    # Without the spec, every partition holding a blob mirror is still checked; only which one a
+    # blob should be on is unknown.
+    for root in /orcd/data/dandi/[0-9][0-9][0-9]/s3dandiarchive/blobs; do
+        [ -d "$root" ] && PARTITIONS+=("$(basename "$(dirname "$(dirname "$root")")")")
+    done
+fi
 BASE_DIRECTORY=/orcd/data/dandi/001/dandi-compute
 RUNNER_CHECKOUT="$BASE_DIRECTORY/dandi-compute-runner"
 LOGIN_HOST=login007
@@ -291,6 +315,11 @@ PROBE
 
     echo
     echo "## The blob mirror"
+    if [ "${#BLOB_HEAD_PARTITION[@]}" -gt 0 ]; then
+        echo "Partitions and blob heads from $PARTITION_SPEC: ${PARTITIONS[*]}"
+    else
+        echo "Could not read $PARTITION_SPEC; checking every partition with a blob mirror: ${PARTITIONS[*]:-none}"
+    fi
     show "Space on the partitions" df -h "${PARTITIONS[@]/#//orcd/data/dandi/}"
     local partition root test_file writable=()
     for partition in "${PARTITIONS[@]}"; do
@@ -469,7 +498,7 @@ section_missing_blobs() {
     scripts=$(grep -c . "$listing" || true)
     echo "Submission scripts found: $scripts"
 
-    local script blob tree done_mark state other ok=0 elsewhere=0 missing=0 none=0 rows
+    local script blob id assigned tree done_mark state other ok=0 elsewhere=0 missing=0 none=0 rows
     rows=$(mktemp)
     while read -r script; do
         blob=$(grep -oE '/orcd/data/dandi/[0-9]{3}/s3dandiarchive/blobs/[0-9a-f]{3}/[0-9a-f]{3}/[0-9a-f-]{36}' "$script" | head -n 1)
@@ -488,14 +517,16 @@ section_missing_blobs() {
         for partition in "${PARTITIONS[@]}"; do
             [ -f "${blob/\/dandi\/[0-9][0-9][0-9]\//\/dandi\/$partition\/}" ] && other="$partition"
         done
+        id=$(basename "$blob")
+        assigned="${BLOB_HEAD_PARTITION[${id:0:1}]:-unknown}"
         if [ -n "$other" ]; then
-            state="on partition $other instead"
+            state="on partition $other instead (partitions.json assigns $assigned)"
             elsewhere=$((elsewhere + 1))
         else
-            state="not mirrored"
+            state="not mirrored (partitions.json assigns $assigned)"
             missing=$((missing + 1))
         fi
-        printf '%s | %s | ran to completion: %s | %s\n' "$(basename "$blob")" "$state" "$done_mark" "$(dirname "$(dirname "$script")")" >> "$rows"
+        printf '%s | %s | ran to completion: %s | %s\n' "$id" "$state" "$done_mark" "$(dirname "$(dirname "$script")")" >> "$rows"
     done < "$listing"
     echo "Blob present: $ok. On the other partition: $elsewhere. Not mirrored: $missing. No blob path in the script: $none."
     fact missing_blobs "$scripts capsules on the cluster: $ok with their blob, $elsewhere pointing at the wrong partition, $missing whose blob is not mirrored"

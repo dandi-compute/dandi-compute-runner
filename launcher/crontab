@@ -18,11 +18,6 @@
 # A disk usage snapshot every 30 minutes, recorded under disk/ (see launcher/disk.sh).
 */30 * * * * /bin/bash -l -c '/orcd/data/dandi/001/dandi-compute/dandi-compute-runner/launcher/disk.sh' > /dev/null 2>&1
 
-# Every day at 02:41, the space each blob head takes on each partition, for the disk snapshots
-# above, recorded under logs/ (see launcher/blob_heads.sh). The lock skips a run while the last
-# one is still walking the mirror.
-41 2 * * * flock -n /orcd/data/dandi/001/dandi-compute/flocks/blob_heads.lock /orcd/data/dandi/001/dandi-compute/dandi-compute-runner/launcher/blob_heads.sh > /dev/null 2>&1
-
 # Every Sunday at 04:00, clear the Apptainer blobs older than a week and the dandi-cli logs from the
 # home directory, recorded under logs/ (see launcher/clean_home.sh).
 0 4 * * 0 /orcd/data/dandi/001/dandi-compute/dandi-compute-runner/launcher/clean_home.sh > /dev/null 2>&1
@@ -42,6 +37,10 @@
 0 18 * * * /orcd/data/dandi/001/dandi-compute/dandi-compute-runner/launcher/backup.sh nonblobs > /dev/null 2>&1
 0 6 * * * /orcd/data/dandi/001/dandi-compute/dandi-compute-runner/launcher/backup.sh dashboard > /dev/null 2>&1
 0 10 * * * /orcd/data/dandi/001/dandi-compute/dandi-compute-runner/launcher/backup.sh checksums > /dev/null 2>&1
+# Once the blob backup's 12 hours are up, check that each blob head is on the partition
+# simple-s3-backup's partitions.json assigns it and on no other. It lists directories only and
+# deletes nothing; s3backup dandi cleanup-misplaced-blobs fixes what it finds.
+30 11 * * * /orcd/data/dandi/001/dandi-compute/dandi-compute-runner/launcher/backup.sh verify-blobs > /dev/null 2>&1
 
 # Every hour, the ledger of blobs whose checksum did not match the bucket, kept by the checksums job,
 # is copied to the checksum-mismatches branch of the global logs when it has changed (see

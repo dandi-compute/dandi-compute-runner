@@ -14,8 +14,6 @@
 # counts is its own quota, on space and on the number of files, which ORCD writes to
 # ~/orcd/.quota every 30 minutes. Should that file be
 # missing, the home directory's usage is measured with `du` instead (space only, no limits).
-# Last comes the space each blob head takes on each partition, as launcher/blob_heads.sh last
-# measured it, once a day, so the Status page can show how the heads could be shifted between them.
 #
 # Run on its own it records itself; record.sh runs it again, recorded, for the snapshot.
 if [ -z "${DANDI_COMPUTE_RECORDED:-}" ]; then
@@ -26,7 +24,6 @@ set -uo pipefail
 
 PATHS=(/orcd/data/dandi/001 /orcd/data/dandi/002)
 QUOTA_REPORT="$HOME/orcd/.quota"
-BLOB_HEADS=/orcd/data/dandi/001/dandi-compute/disk/blob_heads.txt
 DU_TIMEOUT_SECONDS=600
 
 # One line per filesystem, the mount point first. The header is made one word per column, at
@@ -46,11 +43,6 @@ else
     else
         printf '%-10s %s\n' "?" "$HOME (du failed or took over ${DU_TIMEOUT_SECONDS}s)"
     fi
-fi
-
-if [ -r "$BLOB_HEADS" ]; then
-    echo
-    cat "$BLOB_HEADS"
 fi
 
 exit "$status"
