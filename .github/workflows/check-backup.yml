@@ -63,7 +63,7 @@ jobs:
       report: ${{ steps.jobs.outputs.report }}
     env:
       # The names launcher/backup.sh gives the jobs the crontab submits every day.
-      JOBS: DANDI-Backup-Blobs DANDI-Backup-Nonblobs DANDI-Update-Backup-Dashboard DANDI-Verify-Checksums DANDI-Track-Deleted-Blobs
+      JOBS: DANDI-Backup-Blobs DANDI-Backup-Nonblobs DANDI-Update-Backup-Dashboard DANDI-Verify-Checksums
       LOG_DIRECTORY: /orcd/data/dandi/001/backup/logs
       REDACT_SCRIPT: /orcd/data/dandi/001/dandi-compute/dandi-compute-runner/launcher/redact.sed
       WINDOW_HOURS: 24

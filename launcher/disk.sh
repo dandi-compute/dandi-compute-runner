@@ -15,11 +15,11 @@
 # ~/orcd/.quota every 30 minutes. Should that file be
 # missing, the home directory's usage is measured with `du` instead (space only, no limits).
 #
-# Last come the blobs the mirror still holds after the bucket deleted them, from the newest daily
-# scan of launcher/deleted_blobs.py (the DANDI-Track-Deleted-Blobs job, see launcher/backup.sh):
-# when it ran, how much of each partition's mirror they are, and how long the bucket still keeps
-# them. The list of those blobs goes into the record beside the output, as deleted-blobs.tsv. Git
-# stores one copy of it for as long as it does not change, so it costs about one copy a day.
+# Last come the mirrored blobs that are no longer in the bucket, which simple-s3-backup's checksum
+# job deletes from the mirror 183 days after it first finds them missing, from its record of them
+# (launcher/not_in_bucket.py): how many each partition holds, their share of its used space, and how
+# long they have left. Their list goes into the record beside the output, as blobs-not-in-bucket.tsv.
+# Git stores one copy of it for as long as the record does not change.
 #
 # Run on its own it records itself; record.sh runs it again, recorded, for the snapshot.
 if [ -z "${DANDI_COMPUTE_RECORDED:-}" ]; then
@@ -31,8 +31,10 @@ set -uo pipefail
 PATHS=(/orcd/data/dandi/001 /orcd/data/dandi/002)
 QUOTA_REPORT="$HOME/orcd/.quota"
 DU_TIMEOUT_SECONDS=600
+# The sizes of the blobs not in the bucket, read again only once simple-s3-backup's record changes.
+NOT_IN_BUCKET_CACHE=/orcd/data/dandi/001/dandi-compute/dandi-compute-global-logs/untracked/not-in-bucket-sizes.tsv
 LAUNCHER="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
-# deleted_blobs.py needs only a Python 3; these are tried before the one on PATH.
+# not_in_bucket.py needs only a Python 3; these are tried before the one on PATH.
 PYTHONS=(
     /orcd/data/dandi/001/environments/name-datalad_env/bin/python
     /orcd/data/dandi/001/environments/name-s3+backup_env/bin/python
@@ -64,9 +66,10 @@ for candidate in "${PYTHONS[@]}"; do
 done
 if [ -n "$python" ]; then
     # DANDI_COMPUTE_RECORD_DIRECTORY is the record's own directory (see launcher/record.sh).
-    "$python" "$LAUNCHER/deleted_blobs.py" summary ${DANDI_COMPUTE_RECORD_DIRECTORY:+--list-to "$DANDI_COMPUTE_RECORD_DIRECTORY"}
+    "$python" "$LAUNCHER/not_in_bucket.py" --cache "$NOT_IN_BUCKET_CACHE" \
+        ${DANDI_COMPUTE_RECORD_DIRECTORY:+--list-to "$DANDI_COMPUTE_RECORD_DIRECTORY"}
 else
-    echo "Deleted blobs: no Python to read the last scan with"
+    echo "Not in bucket: no Python to read the record with"
 fi
 
 exit "$status"

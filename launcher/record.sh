@@ -35,7 +35,7 @@
 # Commands run through record.sh see DANDI_COMPUTE_RECORDED=1, which is how the task scripts
 # know not to wrap themselves a second time, and DANDI_COMPUTE_RECORD_DIRECTORY, the record's
 # directory, where a command can leave files of its own to be recorded beside its output (the disk
-# snapshot leaves the list of deleted blobs there). They are masked like the rest of the record.
+# snapshot leaves the list of blobs not in the bucket there). They are masked like the rest of the record.
 
 set -u
 

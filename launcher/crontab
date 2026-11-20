@@ -37,10 +37,6 @@
 0 6 * * * /orcd/data/dandi/001/dandi-compute/dandi-compute-runner/launcher/backup.sh dashboard > /dev/null 2>&1
 0 10 * * * /orcd/data/dandi/001/dandi-compute/dandi-compute-runner/launcher/backup.sh checksums > /dev/null 2>&1
 
-# Every day at 05:00, find the mirrored blobs the bucket has deleted since and how long the bucket
-# keeps them, which every disk usage snapshot then shows (see launcher/deleted_blobs.sh).
-0 5 * * * /orcd/data/dandi/001/dandi-compute/dandi-compute-runner/launcher/backup.sh deleted > /dev/null 2>&1
-
 # Every hour, the ledger of blobs whose checksum did not match the bucket, kept by the checksums job,
 # is copied to the checksum-mismatches branch of the global logs when it has changed (see
 # launcher/publish_checksum_mismatches.sh).
