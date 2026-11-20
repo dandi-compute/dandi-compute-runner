@@ -33,7 +33,9 @@
 # than DAY_BRANCH_RETENTION_DAYS (see clean_up_day_branches). main and monitor/latest stay.
 #
 # Commands run through record.sh see DANDI_COMPUTE_RECORDED=1, which is how the task scripts
-# know not to wrap themselves a second time.
+# know not to wrap themselves a second time, and DANDI_COMPUTE_RECORD_DIRECTORY, the record's
+# directory, where a command can leave files of its own to be recorded beside its output (the disk
+# snapshot leaves the list of blobs not in the bucket there). They are masked like the rest of the record.
 
 set -u
 
@@ -166,6 +168,7 @@ prepare_clone() {
 # its output.
 inner_command() {
     local script='output="$PWD/$0"; directory="$1"; shift; echo started > "$output/exit_status"
+export DANDI_COMPUTE_RECORD_DIRECTORY="$output"
 cd "$directory" || { echo 111 > "$output/exit_status"; exit 111; }
 "$@" > >(tee "$output/stdout") 2> >(tee "$output/stderr" >&2)
 status=$?; echo "$status" > "$output/exit_status"; exit "$status"'
