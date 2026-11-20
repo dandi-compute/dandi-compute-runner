@@ -367,3 +367,4 @@ jobs:
             Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
             Checksum mismatches so far: https://github.com/dandi-compute/dandi-compute-global-logs/blob/checksum-mismatches/checksum-mismatches.tsv
             Dashboard: https://github.com/dandi/backup-status
+            Blobs no longer in the bucket, deleted from the mirror after 183 days: https://github.com/dandi-compute/dandi-compute-global-logs/blob/not-in-bucket/not-in-bucket.tsv
