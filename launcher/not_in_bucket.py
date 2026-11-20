@@ -7,7 +7,8 @@ deletes it from the mirror. Every event is appended to RECORD (`time`, `event`, 
 mirror, `gone` when gone from the mirror by other means. A blob is pending while its last event is
 `missing`, and its grace period runs from the first `missing` since its last other event.
 
-    not_in_bucket.py [--record FILE] [--grace-days DAYS] [--list-to DIR] [--cache FILE]
+    not_in_bucket.py [--record FILE] [--grace-days DAYS | --grace-source FILE] [--list-to DIR] [--cache FILE]
+    not_in_bucket.py --overdue DAYS [--record FILE] [--grace-days DAYS | --grace-source FILE]
 
 This prints, as the blocks of the disk usage snapshot (launcher/disk.sh):
 
@@ -21,6 +22,10 @@ With --list-to, the pending blobs are also written there as blobs-not-in-bucket.
 deleted first: `key`, `partition`, `size` (bytes, empty when the file cannot be read), `missing_since`
 and `deletion_due`. It holds no time that changes from one snapshot to the next, so git stores it
 once for as long as the record stays the same.
+
+With --overdue, it only checks that the deletions happen: it lists the pending blobs more than that
+many days past their deletion date, and exits 1 when there is any (the Check backup workflow, on the
+copy of the record published to the global logs).
 
 Each pending blob's size is read from the mirror. The sizes are cached in --cache, with the record's
 size and modification time, and read again only once the record has changed.
@@ -318,10 +323,49 @@ def list_text(rows, days):
     return "\n".join(lines) + "\n"
 
 
+def overdue_report(pending, days, overdue_days, now, shown=10):
+    """What the check of the deletions says, and whether a blob is overdue."""
+    grace = datetime.timedelta(days=days)
+    late = datetime.timedelta(days=overdue_days)
+    due = sorted((since + grace, key) for key, (since, _) in pending.items())
+    overdue = [(when, key) for when, key in due if now - when > late]
+    if not overdue:
+        upcoming = [when for when, _ in due if when > now]
+        late_within = len(due) - len(upcoming)
+        notes = ["{} waiting".format(len(due))]
+        if late_within:
+            notes.append("{} past due by under {:g} days".format(late_within, overdue_days))
+        if upcoming:
+            notes.append("the next due {}".format(format_time(upcoming[0])))
+        message = "No mirrored blob is more than {:g} days past its deletion date ({}).".format(
+            overdue_days, ", ".join(notes)
+        )
+        return message, False
+    lines = [
+        "{} mirrored blob{} more than {:g} days past {} deletion date ({:g} days after first found missing), "
+        "so the checksum job is not deleting {}:".format(
+            len(overdue),
+            " is" if len(overdue) == 1 else "s are",
+            overdue_days,
+            "its" if len(overdue) == 1 else "their",
+            days,
+            "it" if len(overdue) == 1 else "them",
+        )
+    ]
+    for when, key in overdue[:shown]:
+        ago = human_duration((now - when).total_seconds())
+        lines.append("  {} (due {}, {} ago)".format(key, format_time(when), ago))
+    if len(overdue) > shown:
+        lines.append("  ... and {} more".format(len(overdue) - shown))
+    return "\n".join(lines), True
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--record", default=RECORD, help="simple-s3-backup's record of blobs not in the bucket")
     parser.add_argument("--grace-days", type=float, help="days a blob is kept (default: simple-s3-backup's, else 183)")
+    parser.add_argument("--grace-source", default=GRACE_DAYS_SOURCE, help="simple-s3-backup's file setting GRACE_DAYS")
+    parser.add_argument("--overdue", type=float, help="only check that no blob is more than this many days past due")
     parser.add_argument("--list-to", default="", help="a directory to write the list of pending blobs into")
     parser.add_argument("--cache", default="", help="a file to cache the pending blobs' sizes in")
     arguments = parser.parse_args(argv)
@@ -329,7 +373,16 @@ def main(argv=None):
     if arguments.grace_days is not None:
         days, source = arguments.grace_days, "given"
     else:
-        days, source = grace_days()
+        days, source = grace_days(arguments.grace_source)
+    if arguments.overdue is not None:
+        try:
+            pending = pending_blobs(arguments.record)
+        except OSError as error:
+            print("Could not read the record {}: {}".format(arguments.record, error))
+            return 2
+        message, overdue = overdue_report(pending, days, arguments.overdue, utc_now())
+        print(message)
+        return 1 if overdue else 0
     try:
         rows = blob_rows(arguments.record, arguments.cache or None)
         modified = os.stat(arguments.record).st_mtime
