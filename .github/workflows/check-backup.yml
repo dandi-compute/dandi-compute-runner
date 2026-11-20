@@ -16,6 +16,10 @@ name: Check backup
 #     dashboard job updates every morning. It fails when the mirror has not gained a blob in
 #     GROWTH_DAYS days while the bucket has, which catches a backup that stops copying without
 #     any task failing.
+#   - Check deletions reads the record of mirrored blobs no longer in the bucket, as published to
+#     the not-in-bucket branch of the global logs. It fails when a blob is still waiting more than
+#     OVERDUE_DAYS past the day the checksum job should have deleted it from the mirror, which
+#     catches deletions that stop happening.
 #
 # When the only problem is checksum mismatches, the email is a short one naming the blobs; otherwise
 # it is the full report, which names them too.
@@ -316,17 +320,76 @@ jobs:
           fi
           write_report "$report"
 
+  CheckDeletions:
+    name: Check deletions
+    runs-on: ubuntu-latest
+    outputs:
+      report: ${{ steps.deletions.outputs.report }}
+    env:
+      RECORD_URL: https://raw.githubusercontent.com/dandi-compute/dandi-compute-global-logs/refs/heads/not-in-bucket/not-in-bucket.tsv
+      # simple-s3-backup's partitions.json, which sets how long a blob is kept before it is deleted from
+      # the mirror, and before it, the code that set it.
+      SPEC_URL: https://raw.githubusercontent.com/dandi/simple-s3-backup/main/src/simple_s3_backup/partitions.json
+      GRACE_SOURCE_URL: https://raw.githubusercontent.com/dandi/simple-s3-backup/main/src/simple_s3_backup/_base/_not_in_bucket.py
+      # A head's checksum run comes every few days, and the first pass over the mirror takes longer.
+      OVERDUE_DAYS: 7
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Check that the blobs no longer in the bucket are deleted when due
+        id: deletions
+        run: |
+          set -uo pipefail
+          write_report() {
+            echo "$1"
+            {
+              echo "### Deletions from the mirror"
+              echo
+              echo '```'
+              echo "$1"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+            delimiter="REPORT_$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')"
+            printf 'report<<%s\n%s\n%s\n' "$delimiter" "$1" "$delimiter" >> "$GITHUB_OUTPUT"
+          }
+
+          status=$(curl -sS -o "$RUNNER_TEMP/not-in-bucket.tsv" -w '%{http_code}' "$RECORD_URL") || status=000
+          if [ "$status" = 404 ]; then
+            # Nothing has been found missing yet, or the record has not been published.
+            write_report "No record of blobs no longer in the bucket is published yet (${RECORD_URL})."
+            exit 0
+          elif [ "$status" != 200 ]; then
+            echo "::error title=Record unreadable::Could not download ${RECORD_URL} (HTTP ${status})."
+            write_report "Could not download the record of blobs no longer in the bucket (HTTP ${status}), so whether they are deleted when due is unknown."
+            exit 1
+          fi
+          # Without simple-s3-backup's own number of days, from either, not_in_bucket.py takes 183.
+          curl -sSf -o "$RUNNER_TEMP/partitions.json" "$SPEC_URL" \
+            || curl -sSf -o "$RUNNER_TEMP/grace.py" "$GRACE_SOURCE_URL" \
+            || echo "::warning::Could not read simple-s3-backup's grace period from ${SPEC_URL} or ${GRACE_SOURCE_URL}; taking 183 days."
+
+          # The step's shell stops at the first failing command, so the exit status is kept this way.
+          report=$(python3 launcher/not_in_bucket.py --record "$RUNNER_TEMP/not-in-bucket.tsv" \
+            --spec "$RUNNER_TEMP/partitions.json" --grace-source "$RUNNER_TEMP/grace.py" \
+            --overdue "$OVERDUE_DAYS") && checked=0 || checked=$?
+          write_report "$report"
+          if [ "$checked" -eq 1 ]; then
+            echo "::error title=Deletions overdue::A mirrored blob is more than ${OVERDUE_DAYS} days past its deletion date."
+          fi
+          exit "$checked"
+
   # The checks run once a day, so this sends no more than one email a day without the 24-hour
   # cooldown of the other workflows, which would skip every other day's email whenever GitHub
   # started a run a little earlier than the day before.
   NotifyOnFailure:
     if: ${{ always() && failure() }}  # 'always' for if any 'needs' are cancelled/skipped
-    needs: [CheckEngaging, CheckBackupJobs, CheckMirrorGrowth]
+    needs: [CheckEngaging, CheckBackupJobs, CheckMirrorGrowth, CheckDeletions]
     runs-on: ubuntu-latest
     steps:
       # Checksum mismatches alone get a short email of their own.
       - name: Send email about checksum mismatches
-        if: ${{ needs.CheckBackupJobs.outputs.only_checksum_mismatches == 'true' && needs.CheckMirrorGrowth.result == 'success' }}
+        if: ${{ needs.CheckBackupJobs.outputs.only_checksum_mismatches == 'true' && needs.CheckMirrorGrowth.result == 'success' && needs.CheckDeletions.result == 'success' }}
         uses: dawidd6/action-send-mail@67ce3558d613188179559c61d3565140cf389968 # v22
         with:
           server_address: smtp.gmail.com
@@ -345,7 +408,7 @@ jobs:
             Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
 
       - name: Send email notification on failure
-        if: ${{ !(needs.CheckBackupJobs.outputs.only_checksum_mismatches == 'true' && needs.CheckMirrorGrowth.result == 'success') }}
+        if: ${{ !(needs.CheckBackupJobs.outputs.only_checksum_mismatches == 'true' && needs.CheckMirrorGrowth.result == 'success' && needs.CheckDeletions.result == 'success') }}
         uses: dawidd6/action-send-mail@67ce3558d613188179559c61d3565140cf389968 # v22
         with:
           server_address: smtp.gmail.com
@@ -363,6 +426,9 @@ jobs:
 
             Mirror growth (${{ needs.CheckMirrorGrowth.result }}):
             ${{ needs.CheckMirrorGrowth.outputs.report || 'No report; see the run.' }}
+
+            Deletions from the mirror (${{ needs.CheckDeletions.result }}):
+            ${{ needs.CheckDeletions.outputs.report || 'No report; see the run.' }}
 
             Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
             Checksum mismatches so far: https://github.com/dandi-compute/dandi-compute-global-logs/blob/checksum-mismatches/checksum-mismatches.tsv

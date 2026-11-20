@@ -15,6 +15,12 @@
 # ~/orcd/.quota every 30 minutes. Should that file be
 # missing, the home directory's usage is measured with `du` instead (space only, no limits).
 #
+# Last come the mirrored blobs that are no longer in the bucket, which simple-s3-backup's checksum
+# job deletes from the mirror 183 days after it first finds them missing, from its record of them
+# (launcher/not_in_bucket.py): how many each partition holds, their share of its used space, and how
+# long they have left. Their list goes into the record beside the output, as blobs-not-in-bucket.tsv.
+# Git stores one copy of it for as long as the record does not change.
+#
 # Run on its own it records itself; record.sh runs it again, recorded, for the snapshot.
 if [ -z "${DANDI_COMPUTE_RECORDED:-}" ]; then
     exec /orcd/data/dandi/001/dandi-compute/dandi-compute-runner/launcher/record.sh disk usage -- "$0"
@@ -25,6 +31,14 @@ set -uo pipefail
 PATHS=(/orcd/data/dandi/001 /orcd/data/dandi/002)
 QUOTA_REPORT="$HOME/orcd/.quota"
 DU_TIMEOUT_SECONDS=600
+# The sizes of the blobs not in the bucket, read again only once simple-s3-backup's record changes.
+NOT_IN_BUCKET_CACHE=/orcd/data/dandi/001/dandi-compute/dandi-compute-global-logs/untracked/not-in-bucket-sizes.tsv
+LAUNCHER="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
+# not_in_bucket.py needs only a Python 3; these are tried before the one on PATH.
+PYTHONS=(
+    /orcd/data/dandi/001/environments/name-datalad_env/bin/python
+    /orcd/data/dandi/001/environments/name-s3+backup_env/bin/python
+)
 
 # One line per filesystem, the mount point first. The header is made one word per column, at
 # the same width so the columns stay aligned, for the Status page to read the output as a table.
@@ -43,6 +57,19 @@ else
     else
         printf '%-10s %s\n' "?" "$HOME (du failed or took over ${DU_TIMEOUT_SECONDS}s)"
     fi
+fi
+
+echo
+python=$(command -v python3)
+for candidate in "${PYTHONS[@]}"; do
+    [ -x "$candidate" ] && { python="$candidate"; break; }
+done
+if [ -n "$python" ]; then
+    # DANDI_COMPUTE_RECORD_DIRECTORY is the record's own directory (see launcher/record.sh).
+    "$python" "$LAUNCHER/not_in_bucket.py" --cache "$NOT_IN_BUCKET_CACHE" \
+        ${DANDI_COMPUTE_RECORD_DIRECTORY:+--list-to "$DANDI_COMPUTE_RECORD_DIRECTORY"}
+else
+    echo "Not in bucket: no Python to read the record with"
 fi
 
 exit "$status"
