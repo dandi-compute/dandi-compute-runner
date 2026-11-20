@@ -11,7 +11,7 @@ name: Check backup
 #     log. A task of DANDI-Verify-Checksums that finds a mirrored blob not matching the bucket
 #     deletes that copy, for the next blob backup to copy afresh, and exits 3. Such a task is told
 #     apart from other failures by that exit code, and each blob it deleted is read from the
-#     `[DELETED]` lines of its log.
+#     `[MISMATCH DELETED]` lines of its log.
 #   - Check mirror growth reads the history of https://github.com/dandi/backup-status, which the
 #     dashboard job updates every morning. It fails when the mirror has not gained a blob in
 #     GROWTH_DAYS days while the bucket has, which catches a backup that stops copying without
@@ -166,14 +166,14 @@ jobs:
             echo "${job}: ${completed} completed${mismatch_summary}, ${failed_count} failed, ${other_count} ended otherwise in the last ${WINDOW_HOURS} hours; ${in_progress} still pending or running." >> "$report"
             if [ "$mismatch_task_count" -gt 0 ]; then
               failed=1
-              # Every blob each of those tasks deleted, once, from its [DELETED] lines:
-              # "[DELETED] <key>: <reason>; the next blob backup copies it again".
+              # Every blob each of those tasks deleted, once, from its [MISMATCH DELETED] lines:
+              # "[MISMATCH DELETED] <key>: <reason>; the next blob backup copies it again".
               task_mismatches=$(mktemp)
               while read -r job_id; do
                 log_file="${LOG_DIRECTORY}/${job}-${job_id}.log"
                 if [ -r "$log_file" ]; then
-                  grep -a '^\[DELETED\] ' "$log_file" | redact \
-                    | sed -E 's/^\[DELETED\] //; s/; the next blob backup copies it again$//' >> "$task_mismatches" || true
+                  grep -a '^\[MISMATCH DELETED\] ' "$log_file" | redact \
+                    | sed -E 's/^\[MISMATCH DELETED\] //; s/; the next blob backup copies it again$//' >> "$task_mismatches" || true
                 else
                   echo "(task ${job_id} exited ${CHECKSUM_MISMATCH_EXIT}, but its log ${log_file} is not there)" >> "$task_mismatches"
                 fi
