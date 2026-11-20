@@ -45,3 +45,6 @@
 # is copied to the checksum-mismatches branch of the global logs when it has changed (see
 # launcher/publish_checksum_mismatches.sh).
 17 * * * * /orcd/data/dandi/001/dandi-compute/dandi-compute-runner/launcher/publish_checksum_mismatches.sh > /dev/null 2>&1
+# Likewise the record of mirrored blobs no longer in the bucket, which the checksums job deletes from
+# the mirror 183 days after it first finds them missing, to the not-in-bucket branch.
+47 * * * * /orcd/data/dandi/001/dandi-compute/dandi-compute-runner/launcher/publish_checksum_mismatches.sh not-in-bucket > /dev/null 2>&1
