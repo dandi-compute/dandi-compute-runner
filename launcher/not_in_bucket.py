@@ -28,7 +28,8 @@ many days past their deletion date, and exits 1 when there is any (the Check bac
 copy of the record published to the global logs).
 
 Each pending blob's size is read from the mirror. The sizes are cached in --cache, with the record's
-size and modification time, and read again only once the record has changed.
+size and modification time, and read again only once the record has changed. A size that could not
+be read is read again every time, and the summary says how many blobs count as 0B for want of one.
 
 Written for the Python 3 of the login node as well as the jobs' environments, so only the standard
 library, and nothing newer than Python 3.6.
@@ -50,7 +51,7 @@ MIRROR_ROOT = "/orcd/data/dandi"
 PARTITIONS = ("001", "002")
 LIST_NAME = "blobs-not-in-bucket.tsv"
 LIST_COLUMNS = ("key", "partition", "size", "missing_since", "deletion_due")
-CACHE_COLUMNS = ("key", "partition", "size", "missing_since")
+CACHE_COLUMNS = ("key", "partition", "size", "missing_since", "path")
 TIME_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
 DAY_SECONDS = 24 * 3600
 # The rows of the time left table: (label, upper bound in days, or None for no bound).
@@ -73,12 +74,17 @@ def parse_time(text):
     match = ISO_TIME.match(text or "")
     if not match:
         return None
-    moment = datetime.datetime(*(int(part) for part in match.groups()[:6]))
-    offset = match.group(7)
-    if offset and offset != "Z":
-        sign = 1 if offset[0] == "+" else -1
-        digits = offset[1:].replace(":", "")
-        moment -= sign * datetime.timedelta(hours=int(digits[:2]), minutes=int(digits[2:]))
+    # A time of the right shape can still be no time at all (month 13, hour 25), which simple-s3-backup
+    # skips as it does any time it cannot read.
+    try:
+        moment = datetime.datetime(*(int(part) for part in match.groups()[:6]))
+        offset = match.group(7)
+        if offset and offset != "Z":
+            sign = 1 if offset[0] == "+" else -1
+            digits = offset[1:].replace(":", "")
+            moment -= sign * datetime.timedelta(hours=int(digits[:2]), minutes=int(digits[2:]))
+    except (ValueError, OverflowError):
+        return None
     return moment
 
 
@@ -127,7 +133,7 @@ def grace_days(source=GRACE_DAYS_SOURCE):
     try:
         with open(source) as stream:
             for line in stream:
-                match = re.match(r"GRACE_DAYS\s*=\s*(\d+(?:\.\d+)?)\s*(?:#.*)?$", line.strip())
+                match = re.match(r"GRACE_DAYS\s*(?::[^=]*)?=\s*(\d+(?:\.\d+)?)\s*(?:#.*)?$", line.strip())
                 if match:
                     return float(match.group(1)), "simple-s3-backup's GRACE_DAYS"
     except OSError:
@@ -178,47 +184,79 @@ def record_signature(record):
 
 
 def read_cache(cache, signature):
-    """The cached rows, when they were made from the record as it is now; else None."""
+    """The cached rows, when they were made from the record as it is now and are whole; else None."""
     try:
         with open(cache) as stream:
             if stream.readline().rstrip("\n") != "# " + signature:
                 return None
             if stream.readline().rstrip("\n").split("\t") != list(CACHE_COLUMNS):
                 return None
-            return [dict(zip(CACHE_COLUMNS, line.rstrip("\n").split("\t"))) for line in stream if line.strip()]
+            rows = []
+            for line in stream:
+                cells = line.rstrip("\n").split("\t")
+                if len(cells) != len(CACHE_COLUMNS):
+                    return None
+                rows.append(dict(zip(CACHE_COLUMNS, cells)))
+            return rows
     except OSError:
         return None
 
 
 def write_cache(cache, signature, rows):
+    # A file of its own for each run, so that two runs at once (a slow one and the next, or one by hand)
+    # never write into each other's.
+    partial = "{}.{}-{}.partial".format(cache, os.uname()[1], os.getpid())
     try:
         directory = os.path.dirname(cache)
         if directory:
             os.makedirs(directory, exist_ok=True)
-        partial = cache + ".partial"
         with open(partial, "w") as stream:
             stream.write("# " + signature + "\n" + "\t".join(CACHE_COLUMNS) + "\n")
             for row in rows:
                 stream.write("\t".join(row[column] for column in CACHE_COLUMNS) + "\n")
         os.replace(partial, cache)
     except OSError as error:
+        try:
+            os.remove(partial)
+        except OSError:
+            pass
         print("Could not cache the sizes in {}: {}".format(cache, error), file=sys.stderr)
 
 
+def size_of(path):
+    """A mirrored file's size in bytes, as text; empty when it cannot be read."""
+    try:
+        return str(os.stat(path).st_size)
+    except OSError:
+        return ""
+
+
 def blob_rows(record, cache=None):
-    """One row per pending blob, with its partition, size (empty when unreadable) and when it went missing."""
+    """
+    One row per pending blob: its partition, its size (empty when unreadable) and when it went missing.
+
+    The sizes come from the cache while the record is as it was when the cache was written, except
+    those that could not be read then, which are read again every time.
+    """
     signature = record_signature(record)
     rows = read_cache(cache, signature) if cache else None
-    if rows is not None:
-        return rows
-    rows = []
-    for key, (since, path) in pending_blobs(record).items():
-        try:
-            size = str(os.stat(path).st_size)
-        except OSError:
-            size = ""
-        partition = partition_of(key, path)
-        rows.append({"key": key, "partition": partition, "size": size, "missing_since": format_time(since)})
+    if rows is None:
+        rows = [
+            {
+                "key": key,
+                "partition": partition_of(key, path),
+                "size": size_of(path),
+                "missing_since": format_time(since),
+                "path": path,
+            }
+            for key, (since, path) in pending_blobs(record).items()
+        ]
+    else:
+        unknown = [row for row in rows if not row["size"]]
+        for row in unknown:
+            row["size"] = size_of(row["path"])
+        if not any(row["size"] for row in unknown):
+            return rows
     if cache:
         write_cache(cache, signature, rows)
     return rows
@@ -254,6 +292,11 @@ def summary_blocks(rows, days, source, updated, now, usage=partition_usage):
             "List: {} ({} blobs)".format(LIST_NAME, len(rows)),
         ]
     )
+    unknown = sum(1 for row in rows if not row["size"])
+    if unknown:
+        about += "\nUnknown size: {} blob{} whose file could not be read, counted as 0B".format(
+            unknown, "" if unknown == 1 else "s"
+        )
 
     share = [["Mirror", "Blobs", "Size", "Used", "Share%"]]
     total_blobs = total_bytes = total_used = 0
@@ -296,7 +339,11 @@ def summary_blocks(rows, days, source, updated, now, usage=partition_usage):
     lower = float("-inf")
     for label, upper in DELETION_BANDS:
         upper_seconds = float("inf") if upper is None else upper * DAY_SECONDS
-        band = [(seconds, row) for seconds, row in left if lower <= seconds < upper_seconds]
+        # Due from the very second the grace period ends, as simple-s3-backup counts it.
+        if upper == 0:
+            band = [(seconds, row) for seconds, row in left if seconds <= 0]
+        else:
+            band = [(seconds, row) for seconds, row in left if 0 < seconds and lower <= seconds < upper_seconds]
         soonest = min((seconds for seconds, _ in band), default=None)
         remaining.append(
             [
@@ -386,8 +433,12 @@ def main(argv=None):
     try:
         rows = blob_rows(arguments.record, arguments.cache or None)
         modified = os.stat(arguments.record).st_mtime
-    except OSError:
+    except FileNotFoundError:
         print("Not in bucket: no record yet ({})".format(arguments.record))
+        return 0
+    except OSError as error:
+        # Still a "Not in bucket:" block, so the Status page shows why.
+        print("Not in bucket: could not read the record ({}): {}".format(arguments.record, error.strerror or error))
         return 0
     updated = datetime.datetime.fromtimestamp(int(modified), datetime.timezone.utc).replace(tzinfo=None)
     print("\n\n".join(summary_blocks(rows, days, source, updated, utc_now())))
