@@ -3,6 +3,12 @@
 # publish_checksum_mismatches.sh - keep the ledger of checksum mismatches of the S3 backup on the
 # checksum-mismatches branch of the global logs repository.
 #
+# Usage: publish_checksum_mismatches.sh [not-in-bucket]
+#
+# With `not-in-bucket`, it publishes instead the record of mirrored blobs no longer in the bucket,
+# which the same job keeps (each is deleted from the mirror 183 days after it was first found
+# missing), to not-in-bucket.tsv on the not-in-bucket branch, the same way.
+#
 # The DANDI-Verify-Checksums job (see launcher/backup.sh), and any `s3backup dandi verify-checksums`
 # run by hand, appends to LEDGER every mirrored blob found not to match the bucket and what became
 # of it. This puts a copy of the ledger, passed through launcher/redact.sed, at
@@ -22,6 +28,17 @@ LOG_REPOSITORY=/orcd/data/dandi/001/dandi-compute/dandi-compute-global-logs
 RUNNER_REPOSITORY=/orcd/data/dandi/001/dandi-compute/dandi-compute-runner
 BRANCH=checksum-mismatches
 FILE=checksum-mismatches.tsv
+DESCRIPTION="checksum mismatches"
+case "${1:-}" in
+    "") ;;
+    not-in-bucket)
+        LEDGER=/orcd/data/dandi/001/backup/not_in_bucket.tsv
+        BRANCH=not-in-bucket
+        FILE=not-in-bucket.tsv
+        DESCRIPTION="blobs not in the bucket"
+        ;;
+    *) echo "Unknown record '$1'; the only one besides the default is 'not-in-bucket'." >&2; exit 2 ;;
+esac
 PUBLISHED="$LOG_REPOSITORY/untracked/$BRANCH.published"
 # This script's own worktree of the shared checkout, and its own lock, so it never waits on the
 # deliveries of record.sh nor they on it.
@@ -43,7 +60,7 @@ fi
 cmp -s "$LEDGER_COPY" "$PUBLISHED" && exit 0
 
 if [ -z "${DANDI_COMPUTE_RECORDED:-}" ]; then
-    exec "$RUNNER_REPOSITORY/launcher/record.sh" logs publish-checksum-mismatches -- "$0" "$@"
+    exec "$RUNNER_REPOSITORY/launcher/record.sh" logs "publish-$BRANCH" -- "$0" "$@"
 fi
 
 # Commits need an identity even where git has none configured.
@@ -87,7 +104,7 @@ for attempt in 1 2 3; do
         cp "$LEDGER_COPY" "$PUBLISHED"
         exit 0
     fi
-    git commit -q -m "[DANDI Compute] checksum mismatches: $events events (runner $runner_commit)" || exit 1
+    git commit -q -m "[DANDI Compute] $DESCRIPTION: $events events (runner $runner_commit)" || exit 1
     if git push -q origin "$BRANCH"; then
         cp "$LEDGER_COPY" "$PUBLISHED"
         echo "Published the ledger of $events events to $BRANCH:"

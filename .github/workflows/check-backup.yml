@@ -8,12 +8,17 @@ name: Check backup
 #
 #   - Check backup jobs reads `sacct` on the cluster for the backup jobs of the last day. It fails
 #     when one was not submitted at all, or a task of one failed, and shows the end of that task's
-#     log. A task of DANDI-Verify-Checksums fails when a mirrored blob does not match the bucket,
-#     and its log ends with the blobs that do not.
+#     log. A task of DANDI-Verify-Checksums that finds a mirrored blob not matching the bucket
+#     deletes that copy, for the next blob backup to copy afresh, and exits 3. Such a task is told
+#     apart from other failures by that exit code, and each blob it deleted is read from the
+#     `[MISMATCH DELETED]` lines of its log.
 #   - Check mirror growth reads the history of https://github.com/dandi/backup-status, which the
 #     dashboard job updates every morning. It fails when the mirror has not gained a blob in
 #     GROWTH_DAYS days while the bucket has, which catches a backup that stops copying without
 #     any task failing.
+#
+# When the only problem is checksum mismatches, the email is a short one naming the blobs; otherwise
+# it is the full report, which names them too.
 
 on:
   workflow_dispatch:
@@ -61,6 +66,8 @@ jobs:
     timeout-minutes: 15
     outputs:
       report: ${{ steps.jobs.outputs.report }}
+      mismatches: ${{ steps.jobs.outputs.mismatches }}
+      only_checksum_mismatches: ${{ steps.jobs.outputs.only_checksum_mismatches }}
     env:
       # The names launcher/backup.sh gives the jobs the crontab submits every day.
       JOBS: DANDI-Backup-Blobs DANDI-Backup-Nonblobs DANDI-Update-Backup-Dashboard DANDI-Verify-Checksums
@@ -70,6 +77,12 @@ jobs:
       # How many failed tasks of a job have the end of their log shown, and how much of it.
       LOGS_SHOWN: 2
       LOG_LINES: 20
+      # A task of this job exits with this code (as sacct writes it) when it deleted mirrored blobs
+      # that do not match the bucket and had no other problem (see simple-s3-backup's verify-checksums).
+      CHECKSUM_JOB: DANDI-Verify-Checksums
+      CHECKSUM_MISMATCH_EXIT: "3:0"
+      # How many deleted blobs are named.
+      MISMATCHES_SHOWN: 50
 
     steps:
       - name: Check the backup jobs of the last day
@@ -103,7 +116,11 @@ jobs:
           FAILED_STATES='FAILED|OUT_OF_MEMORY|NODE_FAIL|BOOT_FAIL|DEADLINE'
 
           report=$(mktemp)
+          mismatches=$(mktemp)
           failed=0
+          # Whether anything failed other than tasks that found checksum mismatches.
+          other_failure=0
+          mismatch_count=0
           for job in $JOBS; do
             # One row per job, or per task of an array job: JobID|JobName|Submit|End|State|ExitCode|Elapsed.
             # A task still running or pending has no End yet.
@@ -112,13 +129,23 @@ jobs:
             ended=$(awk -F'|' -v since="$since" '$4 ~ /^[0-9]/ && $4 >= since' <<< "$rows")
             completed=$(rows_in_state "$ended" COMPLETED | grep -c . || true)
             failures=$(rows_in_state "$ended" "$FAILED_STATES")
+            mismatch_tasks=""
+            if [ "$job" = "$CHECKSUM_JOB" ]; then
+              # FAILED with the exit code of a checksum mismatch, or not.
+              mismatch_tasks=$(awk -F'|' -v code="$CHECKSUM_MISMATCH_EXIT" \
+                '{ split($5, state, " ") } $0 != "" && state[1] == "FAILED" && $6 == code' <<< "$failures")
+              failures=$(awk -F'|' -v code="$CHECKSUM_MISMATCH_EXIT" \
+                '{ split($5, state, " ") } $0 != "" && !(state[1] == "FAILED" && $6 == code)' <<< "$failures")
+            fi
             failed_count=$(grep -c . <<< "$failures" || true)
+            mismatch_task_count=$(grep -c . <<< "$mismatch_tasks" || true)
             others=$(rows_in_state "$ended" "COMPLETED|$FAILED_STATES" !)
             other_count=$(grep -c . <<< "$others" || true)
             in_progress=$(awk -F'|' '$0 != "" && $4 !~ /^[0-9]/' <<< "$rows" | grep -c . || true)
 
             if [ "$submitted" -eq 0 ] && [ -z "$ended" ]; then
               failed=1
+              other_failure=1
               echo "::error title=${job} not submitted::No ${job} job was submitted in the last ${WINDOW_HOURS} hours."
               {
                 echo "${job}: no job was submitted in the last ${WINDOW_HOURS} hours."
@@ -132,7 +159,28 @@ jobs:
               continue
             fi
 
-            echo "${job}: ${completed} completed, ${failed_count} failed, ${other_count} ended otherwise in the last ${WINDOW_HOURS} hours; ${in_progress} still pending or running." >> "$report"
+            mismatch_summary=""
+            if [ "$job" = "$CHECKSUM_JOB" ]; then
+              mismatch_summary=", ${mismatch_task_count} found checksum mismatches"
+            fi
+            echo "${job}: ${completed} completed${mismatch_summary}, ${failed_count} failed, ${other_count} ended otherwise in the last ${WINDOW_HOURS} hours; ${in_progress} still pending or running." >> "$report"
+            if [ "$mismatch_task_count" -gt 0 ]; then
+              failed=1
+              # Every blob each of those tasks deleted, once, from its [MISMATCH DELETED] lines:
+              # "[MISMATCH DELETED] <key>: <reason>; the next blob backup copies it again".
+              task_mismatches=$(mktemp)
+              while read -r job_id; do
+                log_file="${LOG_DIRECTORY}/${job}-${job_id}.log"
+                if [ -r "$log_file" ]; then
+                  grep -a '^\[MISMATCH DELETED\] ' "$log_file" | redact \
+                    | sed -E 's/^\[MISMATCH DELETED\] //; s/; the next blob backup copies it again$//' >> "$task_mismatches" || true
+                else
+                  echo "(task ${job_id} exited ${CHECKSUM_MISMATCH_EXIT}, but its log ${log_file} is not there)" >> "$task_mismatches"
+                fi
+              done < <(awk -F'|' '{ print $1 }' <<< "$mismatch_tasks")
+              awk '!seen[$0]++' "$task_mismatches" >> "$mismatches"
+              rm -f "$task_mismatches"
+            fi
             if [ "$other_count" -gt 0 ]; then
               # A timeout or preemption on mit_preemptable is not a failure of the backup itself;
               # Check mirror growth notices if it keeps the mirror from growing.
@@ -141,6 +189,7 @@ jobs:
             fi
             if [ "$failed_count" -gt 0 ]; then
               failed=1
+              other_failure=1
               echo "::error title=${job} failed::${failed_count} of its tasks failed in the last ${WINDOW_HOURS} hours."
               describe "$failures" >> "$report"
               if [ "$failed_count" -gt 5 ]; then
@@ -158,6 +207,20 @@ jobs:
             fi
           done
 
+          mismatch_count=$(grep -c . "$mismatches" || true)
+          shown_mismatches=$(mktemp)
+          if [ "$mismatch_count" -gt 0 ]; then
+            echo "::error title=Checksum mismatch::${mismatch_count} mirrored blobs did not match the bucket; their copies were deleted for the next blob backup to copy again."
+            head -n "$MISMATCHES_SHOWN" "$mismatches" | sed 's/^/  /' > "$shown_mismatches"
+            if [ "$mismatch_count" -gt "$MISMATCHES_SHOWN" ]; then
+              echo "  ... and $((mismatch_count - MISMATCHES_SHOWN)) more" >> "$shown_mismatches"
+            fi
+            {
+              echo "Checksum mismatches: ${mismatch_count} mirrored blobs did not match the bucket, and their copies were deleted for the next blob backup to copy again:"
+              cat "$shown_mismatches"
+            } >> "$report"
+          fi
+
           cat "$report"
           {
             echo "### Backup jobs of the last ${WINDOW_HOURS} hours"
@@ -171,6 +234,14 @@ jobs:
             echo "report<<${delimiter}"
             cat "$report"
             echo "${delimiter}"
+            echo "mismatches<<${delimiter}"
+            cat "$shown_mismatches"
+            echo "${delimiter}"
+            if [ "$mismatch_count" -gt 0 ] && [ "$other_failure" -eq 0 ]; then
+              echo "only_checksum_mismatches=true"
+            else
+              echo "only_checksum_mismatches=false"
+            fi
           } >> "$GITHUB_OUTPUT"
           exit "$failed"
 
@@ -253,7 +324,28 @@ jobs:
     needs: [CheckEngaging, CheckBackupJobs, CheckMirrorGrowth]
     runs-on: ubuntu-latest
     steps:
+      # Checksum mismatches alone get a short email of their own.
+      - name: Send email about checksum mismatches
+        if: ${{ needs.CheckBackupJobs.outputs.only_checksum_mismatches == 'true' && needs.CheckMirrorGrowth.result == 'success' }}
+        uses: dawidd6/action-send-mail@67ce3558d613188179559c61d3565140cf389968 # v22
+        with:
+          server_address: smtp.gmail.com
+          server_port: 465
+          username: ${{ secrets.MAIL_USERNAME }}
+          password: ${{ secrets.MAIL_PASSWORD }}
+          subject: "DANDI Compute: checksum mismatch in the S3 backup"
+          to: cody.c.baker.phd@gmail.com  # Add more with comma separation (no spaces)
+          from: DANDI Compute <dandi-compute@users.noreply.github.com>
+          body: |
+            These blobs in the S3 backup on MIT Engaging did not match the bucket. Each corrupted copy was deleted and will be copied again by the next blob backup:
+
+            ${{ needs.CheckBackupJobs.outputs.mismatches }}
+
+            Ledger: https://github.com/dandi-compute/dandi-compute-global-logs/blob/checksum-mismatches/checksum-mismatches.tsv
+            Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
       - name: Send email notification on failure
+        if: ${{ !(needs.CheckBackupJobs.outputs.only_checksum_mismatches == 'true' && needs.CheckMirrorGrowth.result == 'success') }}
         uses: dawidd6/action-send-mail@67ce3558d613188179559c61d3565140cf389968 # v22
         with:
           server_address: smtp.gmail.com
@@ -264,7 +356,7 @@ jobs:
           to: cody.c.baker.phd@gmail.com  # Add more with comma separation (no spaces)
           from: DANDI Compute <dandi-compute@users.noreply.github.com>
           body: |
-            The check of the DANDI S3 backup on MIT Engaging found a problem. Job capsules whose blob is not in the mirror fail on a missing input, and those whose blob in the mirror does not match the bucket (DANDI-Verify-Checksums) read the wrong data.
+            The check of the DANDI S3 backup on MIT Engaging found a problem. Job capsules whose blob is not in the mirror fail on a missing input, and those whose blob in the mirror does not match the bucket (DANDI-Verify-Checksums, which deletes such a copy for the next blob backup to copy again) read the wrong data.
 
             Backup jobs (${{ needs.CheckBackupJobs.result }}):
             ${{ needs.CheckBackupJobs.outputs.report || 'No report. The check did not run (the runner was offline) or failed before reporting; see the run.' }}
@@ -275,3 +367,4 @@ jobs:
             Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
             Checksum mismatches so far: https://github.com/dandi-compute/dandi-compute-global-logs/blob/checksum-mismatches/checksum-mismatches.tsv
             Dashboard: https://github.com/dandi/backup-status
+            Blobs no longer in the bucket, deleted from the mirror after 183 days: https://github.com/dandi-compute/dandi-compute-global-logs/blob/not-in-bucket/not-in-bucket.tsv

@@ -35,7 +35,8 @@
 # The S3 backup jobs of simple-s3-backup, each submission recorded under logs/ and each job's own
 # output kept in /orcd/data/dandi/001/backup/logs/ (see launcher/backup.sh). The Check backup
 # workflow emails when one of them fails or the blob mirror stops growing. The checksums job runs
-# once the blob backup's 12 hours are up, and fails when a mirrored blob does not match the bucket.
+# once the blob backup's 12 hours are up. It deletes a mirrored blob that does not match the bucket,
+# for the next blob backup to copy afresh, and exits 3, which that workflow emails about on its own.
 0 22 * * * /orcd/data/dandi/001/dandi-compute/dandi-compute-runner/launcher/backup.sh blobs > /dev/null 2>&1
 #0 19 * * 0,3 /orcd/data/dandi/001/dandi-compute/dandi-compute-runner/launcher/backup.sh zarr > /dev/null 2>&1  # Zarr was disabled in May 2026
 0 18 * * * /orcd/data/dandi/001/dandi-compute/dandi-compute-runner/launcher/backup.sh nonblobs > /dev/null 2>&1
@@ -46,3 +47,6 @@
 # is copied to the checksum-mismatches branch of the global logs when it has changed (see
 # launcher/publish_checksum_mismatches.sh).
 17 * * * * /orcd/data/dandi/001/dandi-compute/dandi-compute-runner/launcher/publish_checksum_mismatches.sh > /dev/null 2>&1
+# Likewise the record of mirrored blobs no longer in the bucket, which the checksums job deletes from
+# the mirror 183 days after it first finds them missing, to the not-in-bucket branch.
+47 * * * * /orcd/data/dandi/001/dandi-compute/dandi-compute-runner/launcher/publish_checksum_mismatches.sh not-in-bucket > /dev/null 2>&1
