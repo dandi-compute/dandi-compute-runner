@@ -235,7 +235,15 @@ AIND job capsules run Nextflow from a conda environment on the cluster, which da
 
 Nextflow pulls each AIND step's container image into `work/apptainer_cache/` the first time a step needs it, inside the capsule's 1 GB driver job. Building a multi-gigabyte image takes far more memory than that, so the pull is killed and the capsule fails before any step runs.
 
-The [Update container images](https://github.com/dandi-compute/dandi-compute-runner/actions/workflows/update-container-images.yml) workflow pulls them ahead of time instead. It works out the image tag of the latest local pipeline version, and when any of its images is not cached yet it runs the pipeline's own `pull_pipeline_images.sh` in a 32 GB job on `mit_normal`. Pipeline 1.5.0 added DARTsort, which has an image of its own (`aind-ephys-spikesort-dartsort`) that the upstream script does not pull, so the job pulls it directly whenever the release's `environment/images.json` names it. Lupin runs in the base image. The workflow waits for the job, prints its log, and fails if an image is still missing afterwards. It runs after every [Update codebase](https://github.com/dandi-compute/dandi-compute-runner/actions/workflows/update-codebase.yml) run, since that is when a new pipeline tag arrives, and daily an hour before job capsules are created.
+The [Update container images](https://github.com/dandi-compute/dandi-compute-runner/actions/workflows/update-container-images.yml) workflow pulls them ahead of time instead. It works out the image tag of the latest local pipeline version, and when any of its images is not cached yet it submits the pipeline's own `pull_pipeline_images.sh` in a 32 GB job, `DANDI-Compute-Image-Cache`, on `mit_preemptable`. Pipeline 1.5.0 added DARTsort, which has an image of its own (`aind-ephys-spikesort-dartsort`) that the upstream script does not pull, so the job pulls it directly whenever the release's `environment/images.json` names it. Lupin runs in the base image. It runs after every [Update codebase](https://github.com/dandi-compute/dandi-compute-runner/actions/workflows/update-codebase.yml) run, since that is when a new pipeline tag arrives, and daily at 23:00 UTC.
+
+The workflow does not wait for the job. A pull takes about 10 minutes, but on `mit_normal` it waited 6 to 13 hours in the queue in November 2026, holding the runner from every other workflow meanwhile and running into the workflow's time limit. So the workflow submits the job (through [`launcher/guarded-submit`](launcher/guarded-submit), which submits nothing while a job of that name is pending or running) and ends, and the next run checks the result:
+
+- every image cached: nothing to do;
+- an image missing and a pull job still queued or running: it leaves that job to finish;
+- an image missing and no pull job left: it submits a new one. If the last pull job's log shows it was pulling the same tag, that pull ended without caching everything, so the run also prints the end of that log and fails. A failed pull is therefore reported by the run after it, not by the run that submitted it.
+
+Each job writes its log to `processing/derivatives/logs/dandicompute-images/job-<job ID>_slurm.log`. A preempted job goes back in the queue and appends to the same log. A pull cut off partway leaves no partial image under the final name, since with its cache on `apptainer pull` writes the image under a temporary name in the cache directory and renames it into place; the job turns the cache back on in case `APPTAINER_DISABLE_CACHE` reaches it.
 
 | Input | Description | Default |
 |---|---|---|
@@ -245,7 +253,7 @@ To do the same by hand from a cluster shell, run the script where it sits in the
 
 ```bash
 cd /orcd/data/dandi/001/dandi-compute
-sbatch --mem=32GB --cpus-per-task=8 --partition=mit_normal --time=04:00:00 --wrap "source /etc/profile.d/modules.sh && module load apptainer && bash aind-ephys-pipeline/scripts/pull_pipeline_images.sh --cache $PWD/work/apptainer_cache --tag 1.5.0"
+sbatch --mem=32GB --cpus-per-task=8 --partition=mit_preemptable --requeue --time=01:00:00 --wrap "source /etc/profile.d/modules.sh && module load apptainer && bash aind-ephys-pipeline/scripts/pull_pipeline_images.sh --cache $PWD/work/apptainer_cache --tag 1.5.0"
 ```
 
 ## How to prepare a specific AIND job (manual)
