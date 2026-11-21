@@ -61,17 +61,21 @@ jobs:
     defaults:
       run:
         shell: bash --noprofile --norc -c "test -x /orcd/data/dandi/001/dandi-compute/dandi-compute-runner/launcher/record.sh && exec /orcd/data/dandi/001/dandi-compute/dandi-compute-runner/launcher/record.sh logs update-container-images -- bash --noprofile --norc -eo pipefail $0; echo record.sh not found, running unrecorded >&2; exec bash --noprofile --norc -eo pipefail $0" {0}
-    timeout-minutes: 300
+    # The step only submits the pull job, and leaves the waiting to SLURM.
+    timeout-minutes: 15
     env:
       VERSION: ${{ inputs.version }}
 
     steps:
-      - name: Pull missing images in a high-memory SLURM job
+      - name: Submit a high-memory SLURM job to pull missing images
         working-directory: /orcd/data/dandi/001/dandi-compute
         run: |
           PIPELINE_DIRECTORY=aind-ephys-pipeline
           CACHE_DIRECTORY="$PWD/work/apptainer_cache"
           LOG_DIRECTORY=processing/derivatives/logs/dandicompute-images
+          # Where each submission extracts the release its pull job runs the script of.
+          RELEASES_DIRECTORY="$PWD/processing/dandicompute-images-releases"
+          JOB_NAME=DANDI-Compute-Image-Cache
 
           # The latest local tag is what new job capsules are formed against. Its files are read
           # with `git show`, since the shared checkout is on whatever tag the last capsule used.
@@ -117,10 +121,51 @@ jobs:
           fi
           printf 'Not cached yet: %s\n' "${missing[@]}"
 
+          # A pull job still in the queue or running will cache them, and the next run checks that
+          # it did. This run neither waits for it (a job on mit_normal waited 6 to 13 hours for its
+          # ~10 minutes in November 2026, holding the runner from every other workflow meanwhile)
+          # nor queues another beside it.
+          active=$(squeue --me -h -n "$JOB_NAME" -t PD,CF,R,CG,S,RQ -o "%i %T %M %R")
+          if [ -n "$active" ]; then
+            echo "A ${JOB_NAME} job is already queued or running (ID, state, time used, reason or node):"
+            echo "$active"
+            echo "Nothing is submitted. The next run checks whether it cached the images."
+            exit 0
+          fi
+          # Nor is any job left to use the releases earlier runs extracted for it.
+          rm -rf "$RELEASES_DIRECTORY"
+
+          # A job that ended between the first check and squeue may have cached them meanwhile.
+          still_missing=()
+          for file_name in "${missing[@]}"; do
+            [ -f "${CACHE_DIRECTORY}/${file_name}" ] || still_missing+=("$file_name")
+          done
+          if [ "${#still_missing[@]}" -eq 0 ]; then
+            echo "Every image is cached now, by a pull job that has just ended."
+            exit 0
+          fi
+          missing=("${still_missing[@]}")
+
+          # Each pull job prints this line after the date, so a run can tell whether the last pull was of
+          # these images. If it was, and no job is left in the queue, that pull ended without caching
+          # them all: this run fails, with the end of its log, and submits another pull. A missing
+          # image of a tag no pull has tried yet is simply submitted.
+          PULL_HEADER="Pulling the images tagged ${CONTAINER_TAG}"
+          mkdir -p "$LOG_DIRECTORY"
+          last_log=$(find "$LOG_DIRECTORY" -maxdepth 1 -type f -name "job-*_slurm.log" -printf "%T@ %p\n" | sort -n | tail -n 1 | cut -d " " -f 2-)
+          previous_pull_failed=0
+          if [ -n "$last_log" ] && grep -qxF "$PULL_HEADER" "$last_log"; then
+            previous_pull_failed=1
+            echo "The last pull of these images ended without caching them all. The end of its log, ${last_log}:"
+            tail -n 50 "$last_log"
+          fi
+
           # The whole release is extracted (about 1 MB) rather than the script alone, since from
           # 1.4.1 the script reads the image names from environment/images.json beside it. Releases
-          # from 1.4.0 keep the script under scripts/, earlier ones at the top level.
-          RELEASE_DIRECTORY="$PWD/processing/aind-ephys-pipeline-${TAG}-${GITHUB_RUN_ID}"
+          # from 1.4.0 keep the script under scripts/, earlier ones at the top level. The job runs
+          # after this step has ended, so it deletes the extraction itself once its pulls are done.
+          # One it never finishes (cancelled, or out of time) is deleted above by a later run.
+          RELEASE_DIRECTORY="${RELEASES_DIRECTORY}/aind-ephys-pipeline-${TAG}-${GITHUB_RUN_ID}"
           mkdir -p "$RELEASE_DIRECTORY"
           trap 'rm -rf "$RELEASE_DIRECTORY"' EXIT
           git -C "$PIPELINE_DIRECTORY" archive "$TAG" | tar -x -C "$RELEASE_DIRECTORY"
@@ -130,10 +175,10 @@ jobs:
             echo "The pipeline has no pull_pipeline_images.sh at ${TAG}."
             exit 1
           fi
-          mkdir -p "$LOG_DIRECTORY"
 
           # The DARTsort image is pulled the way the upstream script pulls the others, with a
-          # failed pull ignored there too, so success is judged below by the file being in place.
+          # failed pull ignored there too, so success is judged by the next run by the file being
+          # in place.
           DARTSORT_PULL=""
           if [ -n "$DARTSORT_REPOSITORY" ]; then
             DARTSORT_IMAGE="ghcr.io/allenneuraldynamics/${DARTSORT_REPOSITORY}:${CONTAINER_TAG}"
@@ -143,29 +188,39 @@ jobs:
 
           # sbatch rather than srun or salloc: this runner lives inside its own SLURM job, where
           # srun would start a step in that 1 GB allocation instead of requesting a new one.
-          # --wait blocks until the job ends, like srun would.
-          set +e
-          job_id=$(sbatch --wait --parsable \
-            --job-name=DANDI-Compute-Image-Cache \
-            --mem=32GB --cpus-per-task=8 --partition=mit_normal --time=04:00:00 \
+          #
+          # mit_preemptable rather than mit_normal, whose queue kept the pull waiting for hours. A
+          # preempted job goes back in the queue (--requeue) and appends to the same log
+          # (--open-mode=append). The pulls take about 10 minutes, so an hour leaves plenty of room.
+          #
+          # A pull killed partway, by preemption or its time limit, leaves no partial image under the
+          # final name: with Apptainer's cache on, `apptainer pull` (from 1.0) builds the image in its
+          # cache and copies it beside the destination under a temporary name, then renames it into
+          # place. With the cache off (APPTAINER_DISABLE_CACHE) it writes the destination directly,
+          # so the job turns the cache back on should the variable reach it. A requeued job finds the
+          # images its first attempt finished already in place and pulls only the rest.
+          #
+          # guarded-submit -N submits nothing while a job of the same name is pending, configuring
+          # or running; -n 0 turns off its limit on the account's pending jobs, which the job
+          # capsules reach on their own, and -j 0 its random wait before submitting.
+          submission=$(/orcd/data/dandi/001/dandi-compute/dandi-compute-runner/launcher/guarded-submit \
+            -n 0 -N "$JOB_NAME" -j 0 -- \
+            sbatch --parsable \
+            --job-name="$JOB_NAME" \
+            --partition=mit_preemptable --requeue --open-mode=append \
+            --mem=32GB --cpus-per-task=8 --time=01:00:00 \
             --output="${LOG_DIRECTORY}/job-%j_slurm.log" \
-            --wrap "source /etc/profile.d/modules.sh && module load apptainer && bash '${SCRIPT_FILE_PATH}' --cache '${CACHE_DIRECTORY}' --tag '${CONTAINER_TAG}'${DARTSORT_PULL}")
-          set -e
-
-          job_id="${job_id%%;*}"
-          echo "=== Log of job ${job_id} ==="
-          cat "${LOG_DIRECTORY}/job-${job_id}_slurm.log" || echo "No log found for job ${job_id}."
-
-          # The upstream script ignores a failed pull (`|| true`), so success is judged by the
-          # images actually being in place.
-          still_missing=0
-          for file_name in "${missing[@]}"; do
-            if [ ! -f "${CACHE_DIRECTORY}/${file_name}" ]; then
-              echo "Still not cached: ${file_name}"
-              still_missing=1
-            fi
-          done
-          exit "$still_missing"
+            --wrap "date && echo '${PULL_HEADER}' && unset APPTAINER_DISABLE_CACHE SINGULARITY_DISABLE_CACHE && source /etc/profile.d/modules.sh && module load apptainer && bash '${SCRIPT_FILE_PATH}' --cache '${CACHE_DIRECTORY}' --tag '${CONTAINER_TAG}'${DARTSORT_PULL}; status=\$?; rm -rf '${RELEASE_DIRECTORY}'; exit \$status")
+          job_id=$(sed -n "s/^\([0-9][0-9]*\)\(;.*\)\{0,1\}$/\1/p" <<< "$submission" | tail -n 1)
+          if [ -n "$job_id" ]; then
+            trap - EXIT
+            echo "Submitted ${JOB_NAME} job ${job_id} to pull: ${missing[*]}"
+            echo "Its log will be ${LOG_DIRECTORY}/job-${job_id}_slurm.log. The next run checks whether it cached the images."
+          else
+            # guarded-submit found a job of the name after all, submitted since the check above.
+            echo "$submission"
+          fi
+          exit "$previous_pull_failed"
 
   NotifyOnFailure:
     if: ${{ always() && failure() }}  # 'always' for if any 'needs' are cancelled/skipped
