@@ -17,10 +17,15 @@ name: Check backup
 #     failure apart from one of the check itself, since both exit 1. It deletes nothing: the blob
 #     backup fills a missing head, and the Cleanup misplaced blobs workflow (s3backup dandi
 #     cleanup-misplaced-blobs) deletes the copies left elsewhere.
-#   - Check mirror growth reads the history of https://github.com/dandi/backup-status, which the
-#     dashboard job updates every morning. It fails when the mirror has not gained a blob in
-#     GROWTH_DAYS days while the bucket has, which catches a backup that stops copying without
-#     any task failing.
+#   - Check mirror growth counts the blobs the blob backup copied in the last GROWTH_DAYS days, from
+#     the "cp s3://dandiarchive/blobs/..." line s5cmd writes to a DANDI-Backup-Blobs task's log for
+#     each blob it copies (simple-s3-backup#57 sends it there). It fails when none was copied while
+#     the bucket gained blobs, which catches a backup that stops copying without any task failing.
+#     How many the bucket gained, Read bucket growth takes from the history of
+#     https://github.com/dandi/backup-status, which the dashboard job updates every morning; the
+#     dashboard no longer counts the mirror's blobs. A blob copied by more than one day's backup
+#     gives a warning: a copy deleted every day, as verify-checksums deletes one that it finds not
+#     to match the bucket, would be copied every day.
 #   - Check deletions reads the record of mirrored blobs no longer in the bucket, as published to
 #     the not-in-bucket branch of the global logs. It fails when a blob is still waiting more than
 #     OVERDUE_DAYS past the day the checksum job should have deleted it from the mirror, which
@@ -42,6 +47,10 @@ concurrency:
 permissions:
   contents: read
   actions: read
+
+env:
+  # The days over which Check mirror growth looks for copied blobs and bucket growth.
+  GROWTH_DAYS: 3
 
 jobs:
   CheckEngaging:
@@ -281,72 +290,187 @@ jobs:
           } >> "$GITHUB_OUTPUT"
           exit "$failed"
 
-  CheckMirrorGrowth:
-    name: Check mirror growth
+  # How many blobs the bucket gained, from the dashboard's history. It does not fail: Check mirror
+  # growth says what it means when the counts are missing.
+  ReadBucketGrowth:
+    name: Read bucket growth
     runs-on: ubuntu-latest
     outputs:
-      report: ${{ steps.growth.outputs.report }}
-    env:
-      GROWTH_DAYS: 3
+      remote_then: ${{ steps.bucket.outputs.remote_then }}
+      remote_now: ${{ steps.bucket.outputs.remote_now }}
+      then_date: ${{ steps.bucket.outputs.then_date }}
+      now_date: ${{ steps.bucket.outputs.now_date }}
+      note: ${{ steps.bucket.outputs.note }}
 
     steps:
-      - name: Check that the blob mirror is growing
-        id: growth
+      - name: Read the bucket's blob counts from the backup dashboard
+        id: bucket
         run: |
           set -uo pipefail
+          note() {
+            echo "::warning title=Bucket growth unknown::$1"
+            echo "note=$1" >> "$GITHUB_OUTPUT"
+          }
           # Only the history is fetched up front; each file version is fetched when it is read.
-          git clone --quiet --filter=blob:none --no-checkout https://github.com/dandi/backup-status "$RUNNER_TEMP/backup-status"
+          if ! git clone --quiet --filter=blob:none --no-checkout https://github.com/dandi/backup-status "$RUNNER_TEMP/backup-status"; then
+            note "Could not clone https://github.com/dandi/backup-status."
+            exit 0
+          fi
           cd "$RUNNER_TEMP/backup-status"
 
-          write_report() {
-            echo "$1"
-            {
-              echo "### Blob mirror growth"
-              echo
-              echo "$1"
-            } >> "$GITHUB_STEP_SUMMARY"
-            delimiter="REPORT_$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')"
-            printf 'report<<%s\n%s\n%s\n' "$delimiter" "$1" "$delimiter" >> "$GITHUB_OUTPUT"
-          }
-
-          # The blobs/ row of the dashboard's object counts, as "local remote".
-          blob_counts() {
+          # The bucket's side of the blobs/ row of the dashboard's object counts, "<mirror> / <bucket>".
+          # The mirror's side is "—" since simple-s3-backup stopped walking the mirror's blobs (#56).
+          bucket_count() {
             git show "$1:data/content.json" | jq -r '
               .data as $data
               | ($data.Location | index("blobs/")) as $row
               | $data | to_entries[] | select(.key | startswith("Number of Objects")) | .value[$row]
-              | capture("^(?<local>[0-9]+) / (?<remote>[0-9]+)") | "\(.local) \(.remote)"'
+              | capture("^\\S+ / (?<remote>[0-9]+)") | .remote'
           }
 
           newest=$(git rev-list -1 HEAD -- data/content.json)
           newest_date=$(git log -1 --format=%cI "$newest")
           if [ "$(date -d "$newest_date" +%s)" -lt "$(date -d "${GROWTH_DAYS} days ago" +%s)" ]; then
-            # The dashboard job has stopped too. backup-status's own Check last update time
-            # workflow emails about that, so this only says why it cannot tell.
-            echo "::warning title=Dashboard not updated::The backup dashboard was last updated at ${newest_date}, more than ${GROWTH_DAYS} days ago, so whether the mirror is growing is unknown."
-            write_report "The backup dashboard was last updated at ${newest_date}, so whether the mirror is growing is unknown."
+            # backup-status's own Check last update time workflow emails about that.
+            note "The backup dashboard was last updated at ${newest_date}, more than ${GROWTH_DAYS} days ago."
             exit 0
           fi
           oldest=$(git rev-list -1 --before="${GROWTH_DAYS} days ago" HEAD -- data/content.json)
           if [ -z "$oldest" ]; then
-            write_report "The backup dashboard has no update from ${GROWTH_DAYS} days ago to compare with."
+            note "The backup dashboard has no update from ${GROWTH_DAYS} days ago to compare with."
             exit 0
           fi
-          oldest_date=$(git log -1 --format=%cI "$oldest")
+          remote_then=$(bucket_count "$oldest")
+          remote_now=$(bucket_count "$newest")
+          if ! [[ "$remote_then" =~ ^[0-9]+$ && "$remote_now" =~ ^[0-9]+$ ]]; then
+            note "Could not read the bucket's blob counts from data/content.json of https://github.com/dandi/backup-status."
+            exit 0
+          fi
+          {
+            echo "remote_then=${remote_then}"
+            echo "remote_now=${remote_now}"
+            echo "then_date=$(git log -1 --format=%cI "$oldest")"
+            echo "now_date=${newest_date}"
+          } >> "$GITHUB_OUTPUT"
 
-          if ! read -r local_then remote_then <<< "$(blob_counts "$oldest")" \
-              || ! read -r local_now remote_now <<< "$(blob_counts "$newest")" \
-              || [ -z "${local_then:-}" ] || [ -z "${local_now:-}" ]; then
-            echo "::error title=Dashboard unreadable::Could not read the blob counts from data/content.json of dandi/backup-status."
-            write_report "Could not read the blob counts from data/content.json of https://github.com/dandi/backup-status, so whether the mirror is growing is unknown."
-            exit 1
+  CheckMirrorGrowth:
+    needs: [CheckEngaging, ReadBucketGrowth]
+    if: ${{ !cancelled() && needs.CheckEngaging.outputs.online == 'true' }}
+    name: Check mirror growth
+    runs-on: [self-hosted, mit, engaging, submitter]
+    # As for Check backup jobs.
+    defaults:
+      run:
+        shell: bash --noprofile --norc -c "test -x /orcd/data/dandi/001/dandi-compute/dandi-compute-runner/launcher/record.sh && exec /orcd/data/dandi/001/dandi-compute/dandi-compute-runner/launcher/record.sh logs check-backup -- bash --noprofile --norc -eo pipefail $0; echo record.sh not found, running unrecorded >&2; exec bash --noprofile --norc -eo pipefail $0" {0}
+    timeout-minutes: 15
+    outputs:
+      report: ${{ steps.growth.outputs.report }}
+    env:
+      LOG_DIRECTORY: /orcd/data/dandi/001/backup/logs
+      # launcher/backup.sh names each task's log ${BLOB_JOB}-<array job>_<task>.log, one array job a day.
+      BLOB_JOB: DANDI-Backup-Blobs
+      # How many blobs copied on several days are named.
+      REPEATS_SHOWN: 20
+      REMOTE_THEN: ${{ needs.ReadBucketGrowth.outputs.remote_then }}
+      REMOTE_NOW: ${{ needs.ReadBucketGrowth.outputs.remote_now }}
+      THEN_DATE: ${{ needs.ReadBucketGrowth.outputs.then_date }}
+      NOW_DATE: ${{ needs.ReadBucketGrowth.outputs.now_date }}
+      BUCKET_NOTE: ${{ needs.ReadBucketGrowth.outputs.note }}
+
+    steps:
+      - name: Count the blobs the blob backup copied
+        id: growth
+        run: |
+          write_report() {
+            echo "$1"
+            {
+              echo "### Blob mirror growth"
+              echo
+              echo '```'
+              echo "$1"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+            delimiter="REPORT_$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')"
+            printf 'report<<%s\n%s\n%s\n' "$delimiter" "$1" "$delimiter" >> "$GITHUB_OUTPUT"
+          }
+
+          # The logs of the blob backup tasks that wrote in the last GROWTH_DAYS days.
+          logs=()
+          if [ -d "$LOG_DIRECTORY" ]; then
+            mapfile -t logs < <(find "$LOG_DIRECTORY" -maxdepth 1 -type f -name "${BLOB_JOB}-*_*.log" \
+              -mmin -"$((GROWTH_DAYS * 24 * 60))" | sort -V)
+          fi
+          # s5cmd prints "cp s3://dandiarchive/blobs/<key> <local path>" for each object it copies (and
+          # nothing for one it skips), and simple-s3-backup's blob backup sends that to the task's log.
+          # One record of the totals, "C <copies> <distinct keys> <array jobs>", and one per key copied by
+          # more than one array job, so on more than one day: "R <array jobs> <key> <their IDs>".
+          tallies=""
+          if [ "${#logs[@]}" -gt 0 ]; then
+            tallies=$(awk '
+              FNR == 1 {
+                array = FILENAME
+                sub(/.*\//, "", array); sub(/_[0-9]+\.log$/, "", array); sub(/.*-/, "", array)
+                if (!(array in arrays)) { arrays[array] = 1; array_count++ }
+              }
+              $1 == "cp" && index($2, "s3://dandiarchive/blobs/") == 1 {
+                key = substr($2, length("s3://dandiarchive/") + 1)
+                copies++
+                if (!(key in days)) distinct++
+                if (!((key, array) in seen)) {
+                  seen[key, array] = 1
+                  days[key]++
+                  which[key] = which[key] (which[key] == "" ? "" : ",") array
+                }
+              }
+              END {
+                printf "C %d %d %d\n", copies, distinct, array_count
+                for (key in days) if (days[key] > 1) printf "R %d %s %s\n", days[key], key, which[key]
+              }' "${logs[@]}")
+          fi
+          read -r _ copies distinct array_count <<< "$(grep '^C ' <<< "$tallies" || echo "C 0 0 0")"
+          repeats=$(grep '^R ' <<< "$tallies" | sort -k2,2nr -k3,3 || true)
+          repeat_count=$(grep -c . <<< "$repeats" || true)
+
+          if [ "${#logs[@]}" -eq 0 ]; then
+            report="No ${BLOB_JOB} log in ${LOG_DIRECTORY} was written in the last ${GROWTH_DAYS} days, so no blob was copied."
+          else
+            report="The ${#logs[@]} task logs of the ${array_count} ${BLOB_JOB} array jobs that wrote in the last ${GROWTH_DAYS} days show ${copies} blobs copied, ${distinct} distinct."
+          fi
+          if [ -n "$REMOTE_NOW" ]; then
+            gained_remotely=$((REMOTE_NOW - REMOTE_THEN))
+            report="${report}
+          Between ${THEN_DATE} and ${NOW_DATE} the bucket went from ${REMOTE_THEN} to ${REMOTE_NOW} blobs (${gained_remotely})."
+          else
+            gained_remotely=""
+            report="${report}
+          How many blobs the bucket gained is unknown: ${BUCKET_NOTE:-Read bucket growth reported nothing; see the run.}"
           fi
 
-          gained_locally=$((local_now - local_then))
-          gained_remotely=$((remote_now - remote_then))
-          report="Between ${oldest_date} and ${newest_date} the mirror went from ${local_then} to ${local_now} blobs (${gained_locally}), and the bucket from ${remote_then} to ${remote_now} (${gained_remotely}). The mirror now holds ${local_now} of ${remote_now} blobs."
-          if [ "$gained_locally" -le 0 ] && [ "$gained_remotely" -gt 0 ]; then
-            echo "::error title=Blob mirror not growing::The mirror has not gained a blob in ${GROWTH_DAYS} days while the bucket gained ${gained_remotely}."
+          if [ "$repeat_count" -gt 0 ]; then
+            # A blob copied again on another day had a local copy of the wrong size, or none: verify-checksums
+            # deletes a copy that does not match the bucket, so one it wrongly flags is deleted and copied every day.
+            echo "::warning title=Blobs copied on several days::${repeat_count} blobs were copied by more than one daily blob backup in the last ${GROWTH_DAYS} days."
+            report="${report}
+          ${repeat_count} of those blobs were copied by more than one daily blob backup, which a copy deleted every day
+          (by DANDI-Verify-Checksums, see the checksum mismatch ledger) or a copy that never keeps its size would explain:
+          $(head -n "$REPEATS_SHOWN" <<< "$repeats" | awk '{ printf "  %s: %d days (array jobs %s)\n", $3, $2, $4 }')"
+            if [ "$repeat_count" -gt "$REPEATS_SHOWN" ]; then
+              report="${report}
+            ... and $((repeat_count - REPEATS_SHOWN)) more"
+            fi
+          fi
+
+          if [ "$copies" -eq 0 ] && [ "${gained_remotely:-1}" -gt 0 ]; then
+            if [ -n "$gained_remotely" ]; then
+              echo "::error title=Blob mirror not growing::No blob was copied in ${GROWTH_DAYS} days while the bucket gained ${gained_remotely}."
+            else
+              echo "::error title=Blob mirror not growing::No blob was copied in ${GROWTH_DAYS} days, and whether the bucket gained any is unknown."
+            fi
+            if [ "${#logs[@]}" -gt 0 ]; then
+              report="${report}
+          If the logs have no \"cp s3://\" line at all, the simple-s3-backup checkout at /orcd/data/dandi/001/backup/simple-s3-backup
+          may predate https://github.com/dandi/simple-s3-backup/pull/57, from which s5cmd's output reaches them."
+            fi
             write_report "The blob mirror has not grown in ${GROWTH_DAYS} days. ${report}"
             exit 1
           fi
@@ -416,7 +540,7 @@ jobs:
   # started a run a little earlier than the day before.
   NotifyOnFailure:
     if: ${{ always() && failure() }}  # 'always' for if any 'needs' are cancelled/skipped
-    needs: [CheckEngaging, CheckBackupJobs, CheckMirrorGrowth, CheckDeletions]
+    needs: [CheckEngaging, CheckBackupJobs, ReadBucketGrowth, CheckMirrorGrowth, CheckDeletions]
     runs-on: ubuntu-latest
     steps:
       # Checksum mismatches alone get a short email of their own.
@@ -456,8 +580,8 @@ jobs:
             Backup jobs (${{ needs.CheckBackupJobs.result }}):
             ${{ needs.CheckBackupJobs.outputs.report || 'No report. The check did not run (the runner was offline) or failed before reporting; see the run.' }}
 
-            Mirror growth (${{ needs.CheckMirrorGrowth.result }}):
-            ${{ needs.CheckMirrorGrowth.outputs.report || 'No report; see the run.' }}
+            Mirror growth, the blobs the blob backup copied in the last 3 days (${{ needs.CheckMirrorGrowth.result }}):
+            ${{ needs.CheckMirrorGrowth.outputs.report || 'No report. The check did not run (the runner was offline) or failed before reporting; see the run.' }}
 
             Deletions from the mirror (${{ needs.CheckDeletions.result }}):
             ${{ needs.CheckDeletions.outputs.report || 'No report; see the run.' }}
