@@ -37,7 +37,8 @@ name: Check backup
 on:
   workflow_dispatch:
   schedule:
-    # Late morning on the cluster, once the blob backup started at 22:00 has had its 12 hours.
+    # Late morning on the cluster, once the morning's dashboard and checksum jobs have been submitted.
+    # The blob backup started at 22:00 may still be running: its tasks run for up to 48 hours.
     - cron: "37 16 * * *"
 
 concurrency:
@@ -92,6 +93,11 @@ jobs:
       LOG_DIRECTORY: /orcd/data/dandi/001/backup/logs
       REDACT_SCRIPT: /orcd/data/dandi/001/dandi-compute/dandi-compute-runner/launcher/redact.sed
       WINDOW_HOURS: 24
+      # How long an earlier job may still be pending or running before a day without a submission of
+      # its own is an error: launcher/backup.sh submits none while one is. The blob array runs for up
+      # to 48 hours (simple-s3-backup's backup_blobs_batch_deployment.sh), and may wait a day in the
+      # queue, as the one of 2026-11-16 waited for a maintenance reservation.
+      STILL_RUNNING_HOURS: 72
       # How many failed tasks of a job have the end of their log shown, and how much of it.
       LOGS_SHOWN: 2
       LOG_LINES: 20
@@ -111,6 +117,7 @@ jobs:
           # sacct prints times in the cluster's own time zone, which date uses here too, so the
           # two compare as text.
           since=$(date -d "${WINDOW_HOURS} hours ago" '+%Y-%m-%dT%H:%M:%S')
+          still_running_since=$(date -d "${STILL_RUNNING_HOURS} hours ago" '+%Y-%m-%dT%H:%M:%S')
           # Twice the window, so a job submitted before it that ended inside it is listed too.
           listed_from=$(date -d "$((2 * WINDOW_HOURS)) hours ago" '+%Y-%m-%dT%H:%M:%S')
           if ! records=$(sacct --user "$(id -un)" --allocations --noheader --parsable2 \
@@ -162,7 +169,16 @@ jobs:
             others=$(rows_in_state "$ended" "COMPLETED|$FAILED_STATES" !)
             other_count=$(grep -c . <<< "$others" || true)
             in_progress=$(awk -F'|' '$0 != "" && $4 !~ /^[0-9]/' <<< "$rows" | grep -c . || true)
+            # When the earliest of those still pending or running was submitted.
+            earliest_in_progress=$(awk -F'|' '$0 != "" && $4 !~ /^[0-9]/ { print $3 }' <<< "$rows" | sort | head -n 1)
 
+            if [ "$submitted" -eq 0 ] && [ -z "$ended" ] && [ "$in_progress" -gt 0 ] \
+                && [[ ! "$earliest_in_progress" < "$still_running_since" ]]; then
+              # A blob array runs for up to 48 hours, so on the day after its submission it is still
+              # running and launcher/backup.sh rightly submits no other.
+              echo "${job}: none submitted in the last ${WINDOW_HOURS} hours, since the one submitted at ${earliest_in_progress} is still pending or running (${in_progress} in sacct)." >> "$report"
+              continue
+            fi
             if [ "$submitted" -eq 0 ] && [ -z "$ended" ]; then
               failed=1
               other_failure=1
@@ -170,8 +186,9 @@ jobs:
               {
                 echo "${job}: no job was submitted in the last ${WINDOW_HOURS} hours."
                 if [ "$in_progress" -gt 0 ]; then
-                  echo "  An earlier one is still pending or running (${in_progress} in sacct), and launcher/backup.sh"
-                  echo "  submits no other while it is. squeue shows why it has not ended."
+                  echo "  An earlier one, submitted at ${earliest_in_progress}, more than ${STILL_RUNNING_HOURS} hours ago, is still pending"
+                  echo "  or running (${in_progress} in sacct), and launcher/backup.sh submits no other while it is."
+                  echo "  squeue shows why it has not ended."
                 fi
                 echo "  The crontab submits it through launcher/backup.sh, which records each submission in the"
                 echo "  global logs under logs/. Check that the crontab is installed and what the last submission printed."
@@ -367,7 +384,8 @@ jobs:
       report: ${{ steps.growth.outputs.report }}
     env:
       LOG_DIRECTORY: /orcd/data/dandi/001/backup/logs
-      # launcher/backup.sh names each task's log ${BLOB_JOB}-<array job>_<task>.log, one array job a day.
+      # launcher/backup.sh names each task's log ${BLOB_JOB}-<array job>_<task>.log, at most one array job
+      # a day, and none while the previous one, whose tasks run for up to 48 hours, is still running.
       BLOB_JOB: DANDI-Backup-Blobs
       # How many blobs copied on several days are named.
       REPEATS_SHOWN: 20

@@ -384,10 +384,11 @@ section_backup_reproduce() {
     sbatch_path=$(command -v sbatch)
     echo
     echo "### Submission"
-    # The real job keeps its lock while it runs, so tonight's task of the same number skips
-    # rather than running twice.
+    # The task keeps its head's lock while it runs, and the nightly task of the same number fails
+    # on it (after waiting up to 15 minutes for it). --time keeps it to 12 hours, as before the blob
+    # backup's tasks were given 48, so that it holds the lock over at most one nightly submission.
     job_id=$("${CRON_ENVIRONMENT[@]}" "$sbatch_path" --parsable --array="$REPRODUCE_TASK" \
-        --job-name=DANDI-Backup-Blobs-Diagnose \
+        --job-name=DANDI-Backup-Blobs-Diagnose --time=12:00:00 \
         --output="$BACKUP_LOG_DIRECTORY/%x-%A_%a.log" --error="$BACKUP_LOG_DIRECTORY/%x-%A_%a.log" "$traced" 2>&1)
     local status=$?
     rm -f "$traced"

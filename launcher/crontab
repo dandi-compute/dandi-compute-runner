@@ -29,16 +29,18 @@
 
 # The S3 backup jobs of simple-s3-backup, each submission recorded under logs/ and each job's own
 # output kept in /orcd/data/dandi/001/backup/logs/ (see launcher/backup.sh). The Check backup
-# workflow emails when one of them fails or the blob mirror stops growing. The checksums job runs
-# once the blob backup's 12 hours are up. It deletes a mirrored blob that does not match the bucket,
-# for the next blob backup to copy afresh, and exits 3, which that workflow emails about on its own.
+# workflow emails when one of them fails or the blob mirror stops growing. The blob array's tasks run
+# for up to 48 hours, and backup.sh submits none while one is still running, so a day's 22:00 submission
+# is skipped while the previous array runs. The checksums job may run while the blob backup is still
+# copying. It deletes a mirrored blob that does not match the bucket, for the next blob backup to copy
+# afresh, and exits 3, which that workflow emails about on its own.
 0 22 * * * /orcd/data/dandi/001/dandi-compute/dandi-compute-runner/launcher/backup.sh blobs > /dev/null 2>&1
 #0 19 * * 0,3 /orcd/data/dandi/001/dandi-compute/dandi-compute-runner/launcher/backup.sh zarr > /dev/null 2>&1  # Zarr was disabled in May 2026
 0 18 * * * /orcd/data/dandi/001/dandi-compute/dandi-compute-runner/launcher/backup.sh nonblobs > /dev/null 2>&1
 0 6 * * * /orcd/data/dandi/001/dandi-compute/dandi-compute-runner/launcher/backup.sh dashboard > /dev/null 2>&1
 0 10 * * * /orcd/data/dandi/001/dandi-compute/dandi-compute-runner/launcher/backup.sh checksums > /dev/null 2>&1
-# Once the blob backup's 12 hours are up, check that each blob head is on the partition
-# simple-s3-backup's partitions.json assigns it and on no other. It lists directories only and
+# Check that each blob head is on the partition simple-s3-backup's partitions.json assigns it and on
+# no other. It lists directories only, so it can run while the blob backup is still copying, and
 # deletes nothing; the Cleanup misplaced blobs workflow, run by hand, fixes what it finds.
 30 11 * * * /orcd/data/dandi/001/dandi-compute/dandi-compute-runner/launcher/backup.sh verify-blobs > /dev/null 2>&1
 
