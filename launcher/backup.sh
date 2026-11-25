@@ -85,10 +85,12 @@ echo "Deleted $deleted backup logs older than $LOG_RETENTION_DAYS days from $LOG
 
 # guarded-submit -N skips the submission, and says so, while a job of the same name is still
 # pending, configuring or running. The blob and checksum tasks lock their share of the mirror, and
-# their 12 hours do not always end before the next day's submission: the blob array submitted at
-# 22:00 on 2026-11-16 waited for a maintenance reservation until 10:57 the next day, its tasks
-# still held their locks at 22:05, and every task of the array submitted at 22:00 on 2026-11-17
-# failed on them. The checksum arrays, 4 tasks at a time, take two days or more and piled up.
+# do not always end before the next day's submission: the blob array submitted at 22:00 on
+# 2026-11-16 waited for a maintenance reservation until 10:57 the next day, its tasks still held
+# their locks at 22:05, and every task of the array submitted at 22:00 on 2026-11-17 failed on them.
+# The blob tasks now run for up to 48 hours, so a blob array is submitted at the first 22:00 after
+# the previous one has ended. The checksum arrays, 4 tasks at a time, take two days or more and
+# piled up.
 # -n 0 turns off guarded-submit's limit on the account's pending jobs, which the job capsules
 # reach on their own. The flock makes the check and the submission one step.
 # --error as well as --output, since a script's own #SBATCH --error would otherwise still send
