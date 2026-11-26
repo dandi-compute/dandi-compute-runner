@@ -15,6 +15,11 @@
 # A squeue snapshot every 5 minutes, recorded under monitor/ (see launcher/monitor.sh).
 */5 * * * * /bin/bash -l -c '/orcd/data/dandi/001/dandi-compute/dandi-compute-runner/launcher/monitor.sh' > /dev/null 2>&1
 
+# Every hour, the squeue snapshots of today and yesterday are summarized, one line per snapshot, onto
+# the monitor-history branch of the global logs, for the Status page's history charts (see
+# launcher/publish_monitor_history.sh). The day branches are deleted after 30 days; the summaries stay.
+27 * * * * /bin/bash -l -c '/orcd/data/dandi/001/dandi-compute/dandi-compute-runner/launcher/publish_monitor_history.sh' > /dev/null 2>&1
+
 # A disk usage snapshot every 30 minutes, recorded under disk/ (see launcher/disk.sh).
 */30 * * * * /bin/bash -l -c '/orcd/data/dandi/001/dandi-compute/dandi-compute-runner/launcher/disk.sh' > /dev/null 2>&1
 
